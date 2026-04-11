@@ -12,3 +12,5 @@ Similar projects:
 This project has a similar 3-D object in the snow as what we are going for, but it is a Christmas tree: https://www.shadertoy.com/view/ltfGzn
 
 This project currently only works on MacOS with arm64
+
+It can be run with "make run"!

@@ -50,6 +50,7 @@ struct Bounds {
 struct Particle {
     float x;
     float y;
+    float z;
     float speed;
     float drift;
     float phase;
@@ -59,6 +60,7 @@ struct Particle {
 struct ParticleVertex {
     float x;
     float y;
+    float z;
     float size;
 };
 
@@ -109,10 +111,31 @@ struct UmbrellaSilhouette {
     std::array<float, 48> topY{};
 };
 
+struct UmbrellaHeightField {
+    static constexpr std::size_t kSamples = 40;
+    bool valid = false;
+    float xMin = 0.0f;
+    float xMax = 0.0f;
+    float zMin = 0.0f;
+    float zMax = 0.0f;
+    std::array<float, kSamples * kSamples> topY{};
+};
+
+enum class CameraMode {
+    Front = 0,
+    Left,
+    Right,
+    Back,
+    Above,
+    Count
+};
+
 constexpr int kWindowWidth = 960;
 constexpr int kWindowHeight = 640;
 constexpr std::size_t kParticleCount = 900;
 constexpr std::size_t kSnowSamples = 48;
+constexpr float kFloorTopY = -0.54f;
+constexpr float kFloorBottomY = -1.02f;
 
 std::string trim(const std::string& value) {
     const std::size_t start = value.find_first_not_of(" \t\r\n");
@@ -471,19 +494,62 @@ Mat4 buildUmbrellaModelMatrix(const Bounds& bounds) {
         (bounds.min.z + bounds.max.z) * 0.5f
     };
 
-    const float extentX = bounds.max.x - bounds.min.x;
-    const float extentY = bounds.max.y - bounds.min.y;
-    const float extentZ = bounds.max.z - bounds.min.z;
-    const float maxExtent = std::max({extentX, extentY, extentZ});
-    const float scale = 0.0185f;
+    Mat4 oriented = identityMatrix();
+    oriented = multiply(rotationZ(-0.2f), oriented);
+    oriented = multiply(rotationY(-0.1f), oriented);
+    oriented = multiply(rotationX(-1.55f), oriented);
+    oriented = multiply(translation(-center.x, -center.y, -center.z), oriented);
+
+    const std::array<Vec3, 8> corners = {
+        Vec3{bounds.min.x, bounds.min.y, bounds.min.z},
+        Vec3{bounds.min.x, bounds.min.y, bounds.max.z},
+        Vec3{bounds.min.x, bounds.max.y, bounds.min.z},
+        Vec3{bounds.min.x, bounds.max.y, bounds.max.z},
+        Vec3{bounds.max.x, bounds.min.y, bounds.min.z},
+        Vec3{bounds.max.x, bounds.min.y, bounds.max.z},
+        Vec3{bounds.max.x, bounds.max.y, bounds.min.z},
+        Vec3{bounds.max.x, bounds.max.y, bounds.max.z}
+    };
+
+    Bounds orientedBounds{};
+    for (const Vec3& corner : corners) {
+        expandBounds(orientedBounds, transformPoint(oriented, corner));
+    }
+
+    const float orientedExtentX = orientedBounds.max.x - orientedBounds.min.x;
+    const float orientedExtentY = orientedBounds.max.y - orientedBounds.min.y;
+    const float orientedExtentZ = orientedBounds.max.z - orientedBounds.min.z;
+    const float orientedMaxExtent = std::max({orientedExtentX, orientedExtentY, orientedExtentZ});
+    const float targetSize = 1.00f;
+    const float fittedScale = orientedMaxExtent > 0.0001f ? (targetSize / orientedMaxExtent) : 1.0f;
+
+    Mat4 fitted = multiply(uniformScale(fittedScale), oriented);
+
+    Bounds fittedBounds{};
+    for (const Vec3& corner : corners) {
+        expandBounds(fittedBounds, transformPoint(fitted, corner));
+    }
+
+    const Vec3 fittedCenter{
+        (fittedBounds.min.x + fittedBounds.max.x) * 0.5f,
+        (fittedBounds.min.y + fittedBounds.max.y) * 0.5f,
+        (fittedBounds.min.z + fittedBounds.max.z) * 0.5f
+    };
+
+    const float targetCenterX = 3.00f;
+    const float targetBottomY = -25.00f;
+    const float targetCenterZ = -17.0f;
 
     Mat4 model = identityMatrix();
-    model = multiply(translation(0.18f, 0.34f, 0.12f), model);
-    model = multiply(rotationZ(-0.18f), model);
-    model = multiply(rotationY(0.12f), model);
-    model = multiply(rotationX(-1.57f), model);
-    model = multiply(uniformScale(scale * (37.5f / maxExtent)), model);
-    model = multiply(translation(-center.x, -center.y, -center.z), model);
+    model = multiply(
+        translation(
+            targetCenterX - fittedCenter.x,
+            targetBottomY - fittedBounds.min.y,
+            targetCenterZ - fittedCenter.z
+        ),
+        model
+    );
+    model = multiply(fitted, model);
     return model;
 }
 
@@ -499,6 +565,8 @@ Mat4 buildCharacterModelMatrix(const Bounds& bounds) {
     const float extentZ = bounds.max.z - bounds.min.z;
     const float maxExtent = std::max({extentX, extentY, extentZ});
     const float normalizedScale = maxExtent > 0.0001f ? (0.62f / maxExtent) : 1.0f;
+    const float halfHeightScaled = extentY * 0.5f * normalizedScale;
+    const float characterY = (kFloorTopY + 0.01f) + halfHeightScaled;
 
     Mat4 model = identityMatrix();
     model = multiply(rotationY(-1.57f), model);
@@ -506,8 +574,27 @@ Mat4 buildCharacterModelMatrix(const Bounds& bounds) {
     model = multiply(uniformScale(normalizedScale), model);
     model = multiply(translation(-center.x, -center.y, -center.z), model);
     // Apply final placement in world space so X/Y/Z edits move the model predictably on screen.
-    model = multiply(translation(0.12f, -0.18f, -0.04f), model);
+    model = multiply(translation(0.12f, characterY, -0.04f), model);
     return model;
+}
+
+Mat4 buildCameraViewTransform(CameraMode mode) {
+    switch (mode) {
+        case CameraMode::Front:
+            return identityMatrix();
+        case CameraMode::Left:
+            return rotationY(1.57f);
+        case CameraMode::Right:
+            return rotationY(-1.57f);
+        case CameraMode::Back:
+            return rotationY(3.14159f);
+        case CameraMode::Above:
+            return multiply(rotationX(-1.20f), translation(0.0f, -0.10f, 0.0f));
+        case CameraMode::Count:
+            break;
+    }
+
+    return identityMatrix();
 }
 
 bool loadGlbMesh(const std::string& path, SceneMesh& mesh, TextureImage& embeddedTexture) {
@@ -786,27 +873,126 @@ UmbrellaSilhouette buildSilhouette(const std::vector<Vec3>& canopyTriangles, con
     return silhouette;
 }
 
-float silhouetteTopY(const UmbrellaSilhouette& silhouette, float x) {
-    if (!silhouette.valid || x < silhouette.xMin || x > silhouette.xMax) {
+bool triangleHeightAtXZ(
+    const Vec3& a,
+    const Vec3& b,
+    const Vec3& c,
+    float x,
+    float z,
+    float& outY
+) {
+    const float x1 = a.x;
+    const float z1 = a.z;
+    const float x2 = b.x;
+    const float z2 = b.z;
+    const float x3 = c.x;
+    const float z3 = c.z;
+
+    const float denom = (z2 - z3) * (x1 - x3) + (x3 - x2) * (z1 - z3);
+    if (std::abs(denom) < 0.000001f) {
+        return false;
+    }
+
+    const float w1 = ((z2 - z3) * (x - x3) + (x3 - x2) * (z - z3)) / denom;
+    const float w2 = ((z3 - z1) * (x - x3) + (x1 - x3) * (z - z3)) / denom;
+    const float w3 = 1.0f - w1 - w2;
+
+    if (w1 < -0.001f || w2 < -0.001f || w3 < -0.001f) {
+        return false;
+    }
+
+    outY = w1 * a.y + w2 * b.y + w3 * c.y;
+    return true;
+}
+
+UmbrellaHeightField buildUmbrellaHeightField(const std::vector<Vec3>& canopyTriangles, const Mat4& modelMatrix) {
+    UmbrellaHeightField field{};
+    field.topY.fill(-10.0f);
+
+    if (canopyTriangles.empty()) {
+        return field;
+    }
+
+    std::vector<Vec3> transformed;
+    transformed.reserve(canopyTriangles.size());
+    field.xMin = std::numeric_limits<float>::max();
+    field.xMax = -std::numeric_limits<float>::max();
+    field.zMin = std::numeric_limits<float>::max();
+    field.zMax = -std::numeric_limits<float>::max();
+
+    for (const Vec3& point : canopyTriangles) {
+        const Vec3 transformedPoint = transformPoint(modelMatrix, point);
+        transformed.push_back(transformedPoint);
+        field.xMin = std::min(field.xMin, transformedPoint.x);
+        field.xMax = std::max(field.xMax, transformedPoint.x);
+        field.zMin = std::min(field.zMin, transformedPoint.z);
+        field.zMax = std::max(field.zMax, transformedPoint.z);
+    }
+
+    if (!(field.xMax > field.xMin) || !(field.zMax > field.zMin)) {
+        return field;
+    }
+
+    for (std::size_t zi = 0; zi < UmbrellaHeightField::kSamples; ++zi) {
+        const float tz = static_cast<float>(zi) / static_cast<float>(UmbrellaHeightField::kSamples - 1);
+        const float sampleZ = field.zMin + (field.zMax - field.zMin) * tz;
+        for (std::size_t xi = 0; xi < UmbrellaHeightField::kSamples; ++xi) {
+            const float tx = static_cast<float>(xi) / static_cast<float>(UmbrellaHeightField::kSamples - 1);
+            const float sampleX = field.xMin + (field.xMax - field.xMin) * tx;
+
+            float bestY = -10.0f;
+            for (std::size_t i = 0; i + 2 < transformed.size(); i += 3) {
+                float y = 0.0f;
+                if (triangleHeightAtXZ(transformed[i], transformed[i + 1], transformed[i + 2], sampleX, sampleZ, y)) {
+                    bestY = std::max(bestY, y);
+                }
+            }
+
+            field.topY[zi * UmbrellaHeightField::kSamples + xi] = bestY;
+        }
+    }
+
+    field.valid = true;
+    return field;
+}
+
+float umbrellaTopY3D(const UmbrellaHeightField& field, float x, float z) {
+    if (!field.valid || x < field.xMin || x > field.xMax || z < field.zMin || z > field.zMax) {
         return -10.0f;
     }
 
-    const float normalized = (x - silhouette.xMin) / (silhouette.xMax - silhouette.xMin);
-    const float position = normalized * static_cast<float>(kSnowSamples - 1);
-    const std::size_t index = static_cast<std::size_t>(position);
-    const std::size_t nextIndex = std::min(index + 1, kSnowSamples - 1);
-    const float alpha = position - static_cast<float>(index);
-    return silhouette.topY[index] + (silhouette.topY[nextIndex] - silhouette.topY[index]) * alpha;
+    const float nx = (x - field.xMin) / (field.xMax - field.xMin);
+    const float nz = (z - field.zMin) / (field.zMax - field.zMin);
+    const float fx = nx * static_cast<float>(UmbrellaHeightField::kSamples - 1);
+    const float fz = nz * static_cast<float>(UmbrellaHeightField::kSamples - 1);
+
+    const std::size_t x0 = static_cast<std::size_t>(fx);
+    const std::size_t z0 = static_cast<std::size_t>(fz);
+    const std::size_t x1 = std::min(x0 + 1, UmbrellaHeightField::kSamples - 1);
+    const std::size_t z1 = std::min(z0 + 1, UmbrellaHeightField::kSamples - 1);
+
+    const float ax = fx - static_cast<float>(x0);
+    const float az = fz - static_cast<float>(z0);
+
+    const float y00 = field.topY[z0 * UmbrellaHeightField::kSamples + x0];
+    const float y10 = field.topY[z0 * UmbrellaHeightField::kSamples + x1];
+    const float y01 = field.topY[z1 * UmbrellaHeightField::kSamples + x0];
+    const float y11 = field.topY[z1 * UmbrellaHeightField::kSamples + x1];
+
+    const float y0 = y00 + (y10 - y00) * ax;
+    const float y1 = y01 + (y11 - y01) * ax;
+    return y0 + (y1 - y0) * az;
 }
 
-bool hitsUmbrella(const UmbrellaSilhouette& silhouette, float x, float y) {
-    const float topY = silhouetteTopY(silhouette, x);
-    return topY > -5.0f && y <= topY + 0.008f && y >= topY - 0.05f;
+bool hitsUmbrella3D(const UmbrellaHeightField& field, float x, float y, float z) {
+    const float topY = umbrellaTopY3D(field, x, z);
+    return topY > -5.0f && y <= topY + 0.010f && y >= topY - 0.06f;
 }
 
 Particle makeParticle(std::mt19937& rng, bool spawnAtTop) {
     std::uniform_real_distribution<float> xDist(-1.05f, 1.05f);
     std::uniform_real_distribution<float> yDist(-1.0f, 1.0f);
+    std::uniform_real_distribution<float> zDist(-0.95f, 0.95f);
     std::uniform_real_distribution<float> speedDist(0.22f, 0.62f);
     std::uniform_real_distribution<float> driftDist(0.5f, 1.8f);
     std::uniform_real_distribution<float> phaseDist(0.0f, 6.28318f);
@@ -816,6 +1002,7 @@ Particle makeParticle(std::mt19937& rng, bool spawnAtTop) {
     Particle particle{};
     particle.x = xDist(rng);
     particle.y = spawnAtTop ? 1.05f + topOffsetDist(rng) : yDist(rng);
+    particle.z = zDist(rng);
     particle.speed = speedDist(rng);
     particle.drift = driftDist(rng);
     particle.phase = phaseDist(rng);
@@ -825,13 +1012,94 @@ Particle makeParticle(std::mt19937& rng, bool spawnAtTop) {
 
 std::vector<FlatVertex> buildBackground() {
     return {
-        {-1.0f, -1.0f, 0.0f, 0.86f, 0.89f, 0.96f},
-        { 1.0f, -1.0f, 0.0f, 0.86f, 0.89f, 0.96f},
-        { 1.0f, -0.50f, 0.0f, 0.76f, 0.81f, 0.92f},
-        {-1.0f, -1.0f, 0.0f, 0.86f, 0.89f, 0.96f},
-        { 1.0f, -0.50f, 0.0f, 0.76f, 0.81f, 0.92f},
-        {-1.0f, -0.50f, 0.0f, 0.76f, 0.81f, 0.92f},
+        {-1.0f, -1.0f, 0.0f, 0.72f, 0.80f, 0.93f},
+        { 1.0f, -1.0f, 0.0f, 0.72f, 0.80f, 0.93f},
+        { 1.0f,  1.0f, 0.0f, 0.56f, 0.66f, 0.82f},
+        {-1.0f, -1.0f, 0.0f, 0.72f, 0.80f, 0.93f},
+        { 1.0f,  1.0f, 0.0f, 0.56f, 0.66f, 0.82f},
+        {-1.0f,  1.0f, 0.0f, 0.56f, 0.66f, 0.82f},
     };
+}
+
+std::vector<FlatVertex> buildGroundBand() {
+    return {
+        {-1.0f, -1.0f, 0.0f, 0.80f, 0.85f, 0.93f},
+        { 1.0f, -1.0f, 0.0f, 0.80f, 0.85f, 0.93f},
+        { 1.0f, -0.42f, 0.0f, 0.78f, 0.83f, 0.92f},
+        {-1.0f, -1.0f, 0.0f, 0.80f, 0.85f, 0.93f},
+        { 1.0f, -0.42f, 0.0f, 0.78f, 0.83f, 0.92f},
+        {-1.0f, -0.42f, 0.0f, 0.78f, 0.83f, 0.92f},
+    };
+}
+
+std::vector<FlatVertex> buildTopViewFloorFill() {
+    return {
+        {-1.0f, -1.0f, 0.0f, 0.80f, 0.85f, 0.93f},
+        { 1.0f, -1.0f, 0.0f, 0.80f, 0.85f, 0.93f},
+        { 1.0f,  1.0f, 0.0f, 0.80f, 0.85f, 0.93f},
+        {-1.0f, -1.0f, 0.0f, 0.80f, 0.85f, 0.93f},
+        { 1.0f,  1.0f, 0.0f, 0.80f, 0.85f, 0.93f},
+        {-1.0f,  1.0f, 0.0f, 0.80f, 0.85f, 0.93f},
+    };
+}
+
+std::vector<MeshVertex> buildFloorMesh() {
+    const Vec3 floorColor{0.84f, 0.88f, 0.96f};
+    constexpr float xMin = -1.10f;
+    constexpr float xMax = 1.10f;
+    constexpr float zMin = -1.05f;
+    constexpr float zMax = 1.05f;
+
+    return {
+        // Top face
+        {xMin, kFloorTopY, zMin, 0.0f, 1.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 0.0f},
+        {xMax, kFloorTopY, zMin, 0.0f, 1.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 0.0f},
+        {xMax, kFloorTopY, zMax, 0.0f, 1.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 1.0f},
+        {xMin, kFloorTopY, zMin, 0.0f, 1.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 0.0f},
+        {xMax, kFloorTopY, zMax, 0.0f, 1.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 1.0f},
+        {xMin, kFloorTopY, zMax, 0.0f, 1.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 1.0f},
+
+        // Front side (z = zMax)
+        {xMin, kFloorBottomY, zMax, 0.0f, 0.0f, 1.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 0.0f},
+        {xMax, kFloorBottomY, zMax, 0.0f, 0.0f, 1.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 0.0f},
+        {xMax, kFloorTopY, zMax, 0.0f, 0.0f, 1.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 1.0f},
+        {xMin, kFloorBottomY, zMax, 0.0f, 0.0f, 1.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 0.0f},
+        {xMax, kFloorTopY, zMax, 0.0f, 0.0f, 1.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 1.0f},
+        {xMin, kFloorTopY, zMax, 0.0f, 0.0f, 1.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 1.0f},
+
+        // Back side (z = zMin)
+        {xMax, kFloorBottomY, zMin, 0.0f, 0.0f, -1.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 0.0f},
+        {xMin, kFloorBottomY, zMin, 0.0f, 0.0f, -1.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 0.0f},
+        {xMin, kFloorTopY, zMin, 0.0f, 0.0f, -1.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 1.0f},
+        {xMax, kFloorBottomY, zMin, 0.0f, 0.0f, -1.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 0.0f},
+        {xMin, kFloorTopY, zMin, 0.0f, 0.0f, -1.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 1.0f},
+        {xMax, kFloorTopY, zMin, 0.0f, 0.0f, -1.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 1.0f},
+
+        // Left side (x = xMin)
+        {xMin, kFloorBottomY, zMin, -1.0f, 0.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 0.0f},
+        {xMin, kFloorBottomY, zMax, -1.0f, 0.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 0.0f},
+        {xMin, kFloorTopY, zMax, -1.0f, 0.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 1.0f},
+        {xMin, kFloorBottomY, zMin, -1.0f, 0.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 0.0f},
+        {xMin, kFloorTopY, zMax, -1.0f, 0.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 1.0f},
+        {xMin, kFloorTopY, zMin, -1.0f, 0.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 1.0f},
+
+        // Right side (x = xMax)
+        {xMax, kFloorBottomY, zMax, 1.0f, 0.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 0.0f},
+        {xMax, kFloorBottomY, zMin, 1.0f, 0.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 0.0f},
+        {xMax, kFloorTopY, zMin, 1.0f, 0.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 1.0f},
+        {xMax, kFloorBottomY, zMax, 1.0f, 0.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 0.0f},
+        {xMax, kFloorTopY, zMin, 1.0f, 0.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 1.0f, 1.0f},
+        {xMax, kFloorTopY, zMax, 1.0f, 0.0f, 0.0f, floorColor.x, floorColor.y, floorColor.z, 0.0f, 1.0f},
+    };
+}
+
+Mat4 buildFloorModelMatrix(CameraMode mode) {
+    if (mode == CameraMode::Above) {
+        return identityMatrix();
+    }
+
+    // Lift the floor block in side/front/back camera modes so it spans the bottom of the viewport.
+    return translation(0.0f, 0.24f, 0.0f);
 }
 
 std::vector<FlatVertex> buildSnowCap(
@@ -965,10 +1233,12 @@ int main() {
         layout (location = 0) in vec3 aPosition;
         layout (location = 1) in vec3 aColor;
 
+        uniform mat4 uTransform;
+
         out vec3 vColor;
 
         void main() {
-            gl_Position = vec4(aPosition, 1.0);
+            gl_Position = uTransform * vec4(aPosition, 1.0);
             vColor = aColor;
         }
     )GLSL";
@@ -1039,12 +1309,17 @@ int main() {
 
     const char* particleVertexShader = R"GLSL(
         #version 330 core
-        layout (location = 0) in vec2 aPosition;
+        layout (location = 0) in vec3 aPosition;
         layout (location = 1) in float aSize;
 
+        uniform mat4 uView;
+
         void main() {
-            gl_Position = vec4(aPosition, 0.0, 1.0);
-            gl_PointSize = aSize;
+            vec4 viewPosition = uView * vec4(aPosition, 1.0);
+            gl_Position = viewPosition;
+
+            float depthScale = clamp(1.15 - 0.45 * viewPosition.z, 0.55, 1.35);
+            gl_PointSize = aSize * depthScale;
         }
     )GLSL";
 
@@ -1110,6 +1385,7 @@ int main() {
 
     const Mat4 umbrellaModel = buildUmbrellaModelMatrix(umbrellaMesh.bounds);
     const UmbrellaSilhouette silhouette = buildSilhouette(umbrellaMesh.canopyTriangles, umbrellaModel);
+    const UmbrellaHeightField umbrellaHeightField = buildUmbrellaHeightField(umbrellaMesh.canopyTriangles, umbrellaModel);
 
     std::vector<std::string> characterPaths = {
         "assets/im_sol_arm_out.glb",
@@ -1160,6 +1436,57 @@ int main() {
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(FlatVertex), reinterpret_cast<void*>(offsetof(FlatVertex, r)));
     glEnableVertexAttribArray(1);
+
+    GLuint groundBandVao = 0;
+    GLuint groundBandVbo = 0;
+    glGenVertexArrays(1, &groundBandVao);
+    glGenBuffers(1, &groundBandVbo);
+
+    const std::vector<FlatVertex> groundBand = buildGroundBand();
+    glBindVertexArray(groundBandVao);
+    glBindBuffer(GL_ARRAY_BUFFER, groundBandVbo);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(groundBand.size() * sizeof(FlatVertex)), groundBand.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(FlatVertex), reinterpret_cast<void*>(offsetof(FlatVertex, x)));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(FlatVertex), reinterpret_cast<void*>(offsetof(FlatVertex, r)));
+    glEnableVertexAttribArray(1);
+
+    GLuint topFloorFillVao = 0;
+    GLuint topFloorFillVbo = 0;
+    glGenVertexArrays(1, &topFloorFillVao);
+    glGenBuffers(1, &topFloorFillVbo);
+
+    const std::vector<FlatVertex> topFloorFill = buildTopViewFloorFill();
+    glBindVertexArray(topFloorFillVao);
+    glBindBuffer(GL_ARRAY_BUFFER, topFloorFillVbo);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(topFloorFill.size() * sizeof(FlatVertex)), topFloorFill.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(FlatVertex), reinterpret_cast<void*>(offsetof(FlatVertex, x)));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(FlatVertex), reinterpret_cast<void*>(offsetof(FlatVertex, r)));
+    glEnableVertexAttribArray(1);
+
+    GLuint floorVao = 0;
+    GLuint floorVbo = 0;
+    glGenVertexArrays(1, &floorVao);
+    glGenBuffers(1, &floorVbo);
+
+    const std::vector<MeshVertex> floorMesh = buildFloorMesh();
+    glBindVertexArray(floorVao);
+    glBindBuffer(GL_ARRAY_BUFFER, floorVbo);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(floorMesh.size() * sizeof(MeshVertex)),
+        floorMesh.data(),
+        GL_STATIC_DRAW
+    );
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, x)));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, nx)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, r)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, u)));
+    glEnableVertexAttribArray(3);
 
     GLuint umbrellaVao = 0;
     GLuint umbrellaVbo = 0;
@@ -1241,7 +1568,26 @@ int main() {
         nullptr,
         GL_DYNAMIC_DRAW
     );
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(ParticleVertex), reinterpret_cast<void*>(offsetof(ParticleVertex, x)));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ParticleVertex), reinterpret_cast<void*>(offsetof(ParticleVertex, x)));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(ParticleVertex), reinterpret_cast<void*>(offsetof(ParticleVertex, size)));
+    glEnableVertexAttribArray(1);
+
+    GLuint settledSnowVao = 0;
+    GLuint settledSnowVbo = 0;
+    glGenVertexArrays(1, &settledSnowVao);
+    glGenBuffers(1, &settledSnowVbo);
+
+    std::vector<ParticleVertex> settledSnowVertices(UmbrellaHeightField::kSamples * UmbrellaHeightField::kSamples);
+    glBindVertexArray(settledSnowVao);
+    glBindBuffer(GL_ARRAY_BUFFER, settledSnowVbo);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(settledSnowVertices.size() * sizeof(ParticleVertex)),
+        nullptr,
+        GL_DYNAMIC_DRAW
+    );
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ParticleVertex), reinterpret_cast<void*>(offsetof(ParticleVertex, x)));
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(ParticleVertex), reinterpret_cast<void*>(offsetof(ParticleVertex, size)));
     glEnableVertexAttribArray(1);
@@ -1251,7 +1597,10 @@ int main() {
     glEnable(GL_PROGRAM_POINT_SIZE);
 
     std::array<float, kSnowSamples> snowLoad{};
+    std::array<float, UmbrellaHeightField::kSamples * UmbrellaHeightField::kSamples> settledSnowLoad{};
     float lastTime = static_cast<float>(glfwGetTime());
+    CameraMode cameraMode = CameraMode::Front;
+    bool spaceWasDown = false;
 
     while (!glfwWindowShouldClose(window)) {
         const float currentTime = static_cast<float>(glfwGetTime());
@@ -1266,28 +1615,78 @@ int main() {
             glfwSetWindowShouldClose(window, true);
         }
 
+        const bool spaceDown = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+        if (spaceDown && !spaceWasDown) {
+            const int nextMode = (static_cast<int>(cameraMode) + 1) % static_cast<int>(CameraMode::Count);
+            cameraMode = static_cast<CameraMode>(nextMode);
+        }
+        spaceWasDown = spaceDown;
+
         for (float& sample : snowLoad) {
             sample = std::max(0.0f, sample - deltaTime * 0.025f);
+        }
+
+        for (float& sample : settledSnowLoad) {
+            sample = std::max(0.0f, sample - deltaTime * 0.010f);
         }
 
         for (std::size_t i = 0; i < particles.size(); ++i) {
             Particle& particle = particles[i];
             particle.y -= particle.speed * deltaTime;
             particle.x += std::sin(currentTime * particle.drift + particle.phase) * 0.16f * deltaTime;
+            particle.z += std::cos(currentTime * particle.drift * 0.8f + particle.phase) * 0.06f * deltaTime;
 
-            if (hitsUmbrella(silhouette, particle.x, particle.y)) {
-                const float normalized = (particle.x - silhouette.xMin) / (silhouette.xMax - silhouette.xMin);
-                const std::size_t sampleIndex = std::min(
-                    static_cast<std::size_t>(std::clamp(normalized, 0.0f, 0.999f) * static_cast<float>(kSnowSamples)),
-                    kSnowSamples - 1
-                );
-                snowLoad[sampleIndex] = std::min(1.0f, snowLoad[sampleIndex] + 0.16f);
+            if (hitsUmbrella3D(umbrellaHeightField, particle.x, particle.y, particle.z)) {
+                if (umbrellaHeightField.valid &&
+                    particle.x >= umbrellaHeightField.xMin && particle.x <= umbrellaHeightField.xMax &&
+                    particle.z >= umbrellaHeightField.zMin && particle.z <= umbrellaHeightField.zMax) {
+                    const float nx = (particle.x - umbrellaHeightField.xMin) / (umbrellaHeightField.xMax - umbrellaHeightField.xMin);
+                    const float nz = (particle.z - umbrellaHeightField.zMin) / (umbrellaHeightField.zMax - umbrellaHeightField.zMin);
+                    const std::size_t xi = std::min(
+                        static_cast<std::size_t>(std::clamp(nx, 0.0f, 0.999f) * static_cast<float>(UmbrellaHeightField::kSamples)),
+                        UmbrellaHeightField::kSamples - 1
+                    );
+                    const std::size_t zi = std::min(
+                        static_cast<std::size_t>(std::clamp(nz, 0.0f, 0.999f) * static_cast<float>(UmbrellaHeightField::kSamples)),
+                        UmbrellaHeightField::kSamples - 1
+                    );
+                    const std::size_t index = zi * UmbrellaHeightField::kSamples + xi;
+                    settledSnowLoad[index] = std::min(1.0f, settledSnowLoad[index] + 0.18f);
+                }
                 particle = makeParticle(rng, true);
-            } else if (particle.y < -1.1f || particle.x < -1.15f || particle.x > 1.15f) {
+            } else if (
+                particle.y < -1.1f ||
+                particle.x < -1.15f || particle.x > 1.15f ||
+                particle.z < -1.15f || particle.z > 1.15f
+            ) {
                 particle = makeParticle(rng, true);
             }
 
-            particleVertices[i] = {particle.x, particle.y, particle.size};
+            particleVertices[i] = {particle.x, particle.y, particle.z, particle.size};
+        }
+
+        std::size_t settledCount = 0;
+        for (std::size_t zi = 0; zi < UmbrellaHeightField::kSamples; ++zi) {
+            const float tz = static_cast<float>(zi) / static_cast<float>(UmbrellaHeightField::kSamples - 1);
+            const float z = umbrellaHeightField.zMin + (umbrellaHeightField.zMax - umbrellaHeightField.zMin) * tz;
+            for (std::size_t xi = 0; xi < UmbrellaHeightField::kSamples; ++xi) {
+                const std::size_t index = zi * UmbrellaHeightField::kSamples + xi;
+                const float load = settledSnowLoad[index];
+                if (load < 0.04f) {
+                    continue;
+                }
+
+                const float tx = static_cast<float>(xi) / static_cast<float>(UmbrellaHeightField::kSamples - 1);
+                const float x = umbrellaHeightField.xMin + (umbrellaHeightField.xMax - umbrellaHeightField.xMin) * tx;
+                const float y = umbrellaHeightField.topY[index] + 0.006f + load * 0.03f;
+
+                settledSnowVertices[settledCount++] = {
+                    x,
+                    y,
+                    z,
+                    2.0f + load * 5.0f
+                };
+            }
         }
 
         const std::vector<FlatVertex> snowCap = buildSnowCap(silhouette, snowLoad);
@@ -1308,19 +1707,51 @@ int main() {
             particleVertices.data()
         );
 
+        glBindBuffer(GL_ARRAY_BUFFER, settledSnowVbo);
+        glBufferSubData(
+            GL_ARRAY_BUFFER,
+            0,
+            static_cast<GLsizeiptr>(settledCount * sizeof(ParticleVertex)),
+            settledSnowVertices.data()
+        );
+
         glClearColor(0.56f, 0.66f, 0.82f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+        const Mat4 cameraView = buildCameraViewTransform(cameraMode);
+
         glDisable(GL_DEPTH_TEST);
         glUseProgram(flatProgram);
+        const Mat4 flatIdentity = identityMatrix();
+        glUniformMatrix4fv(glGetUniformLocation(flatProgram, "uTransform"), 1, GL_FALSE, flatIdentity.m.data());
         glBindVertexArray(backgroundVao);
         glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(background.size()));
 
+        if (cameraMode == CameraMode::Above) {
+            glBindVertexArray(topFloorFillVao);
+            glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(topFloorFill.size()));
+        } else {
+            glBindVertexArray(groundBandVao);
+            glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(groundBand.size()));
+        }
+
         glEnable(GL_DEPTH_TEST);
+        if (cameraMode != CameraMode::Above) {
+            glUseProgram(meshProgram);
+            glUniform1i(glGetUniformLocation(meshProgram, "uFlattenToScreen"), 0);
+            glUniform1i(glGetUniformLocation(meshProgram, "uUseTexture"), 0);
+            const Mat4 floorModel = buildFloorModelMatrix(cameraMode);
+            const Mat4 displayedFloorModel = multiply(cameraView, floorModel);
+            glUniformMatrix4fv(glGetUniformLocation(meshProgram, "uModel"), 1, GL_FALSE, displayedFloorModel.m.data());
+            glBindVertexArray(floorVao);
+            glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(floorMesh.size()));
+        }
+
         glUseProgram(meshProgram);
-        glUniform1i(glGetUniformLocation(meshProgram, "uFlattenToScreen"), 1);
+        glUniform1i(glGetUniformLocation(meshProgram, "uFlattenToScreen"), 0);
         glUniform1i(glGetUniformLocation(meshProgram, "uUseTexture"), 0);
-        glUniformMatrix4fv(glGetUniformLocation(meshProgram, "uModel"), 1, GL_FALSE, umbrellaModel.m.data());
+        const Mat4 displayedUmbrellaModel = multiply(cameraView, umbrellaModel);
+        glUniformMatrix4fv(glGetUniformLocation(meshProgram, "uModel"), 1, GL_FALSE, displayedUmbrellaModel.m.data());
         glBindVertexArray(umbrellaVao);
         glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(umbrellaMesh.vertices.size()));
 
@@ -1330,17 +1761,19 @@ int main() {
         glBindTexture(GL_TEXTURE_2D, characterTexture != 0 ? characterTexture : whiteFallbackTexture);
         glUniform1i(glGetUniformLocation(meshProgram, "uTexture"), 0);
         glUniform1i(glGetUniformLocation(meshProgram, "uUseTexture"), characterTexture != 0 ? 1 : 0);
-        glUniformMatrix4fv(glGetUniformLocation(meshProgram, "uModel"), 1, GL_FALSE, characterModel.m.data());
+        const Mat4 displayedCharacterModel = multiply(cameraView, characterModel);
+        glUniformMatrix4fv(glGetUniformLocation(meshProgram, "uModel"), 1, GL_FALSE, displayedCharacterModel.m.data());
         glBindVertexArray(characterVao);
         glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(characterMesh.vertices.size()));
         glBindTexture(GL_TEXTURE_2D, 0);
 
-        glDisable(GL_DEPTH_TEST);
-        glUseProgram(flatProgram);
-        glBindVertexArray(snowCapVao);
-        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(snowCap.size()));
-
+        glEnable(GL_DEPTH_TEST);
         glUseProgram(particleProgram);
+        glUniformMatrix4fv(glGetUniformLocation(particleProgram, "uView"), 1, GL_FALSE, cameraView.m.data());
+
+        glBindVertexArray(settledSnowVao);
+        glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(settledCount));
+
         glBindVertexArray(particleVao);
         glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(particleVertices.size()));
 
@@ -1350,10 +1783,18 @@ int main() {
 
     glDeleteBuffers(1, &particleVbo);
     glDeleteVertexArrays(1, &particleVao);
+    glDeleteBuffers(1, &settledSnowVbo);
+    glDeleteVertexArrays(1, &settledSnowVao);
     glDeleteBuffers(1, &snowCapVbo);
     glDeleteVertexArrays(1, &snowCapVao);
     glDeleteTextures(1, &characterTexture);
     glDeleteTextures(1, &whiteFallbackTexture);
+    glDeleteBuffers(1, &topFloorFillVbo);
+    glDeleteVertexArrays(1, &topFloorFillVao);
+    glDeleteBuffers(1, &groundBandVbo);
+    glDeleteVertexArrays(1, &groundBandVao);
+    glDeleteBuffers(1, &floorVbo);
+    glDeleteVertexArrays(1, &floorVao);
     glDeleteBuffers(1, &characterVbo);
     glDeleteVertexArrays(1, &characterVao);
     glDeleteBuffers(1, &umbrellaVbo);

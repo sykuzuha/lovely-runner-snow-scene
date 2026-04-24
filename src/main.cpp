@@ -168,6 +168,14 @@ Mat4 uniformScale(float scale) {
     return matrix;
 }
 
+Mat4 scale(float sx, float sy, float sz) {
+    Mat4 matrix = identityMatrix();
+    matrix.m[0] = sx;
+    matrix.m[5] = sy;
+    matrix.m[10] = sz;
+    return matrix;
+}
+
 Mat4 rotationX(float angle) {
     Mat4 matrix = identityMatrix();
     const float c = std::cos(angle);
@@ -494,6 +502,7 @@ Mat4 buildCharacterModelMatrix(const Bounds& bounds) {
 
     Mat4 model = identityMatrix();
     model = multiply(rotationY(-1.57f), model);
+    model = multiply(scale(1.0f, 1.0f, -1.0f), model);
     model = multiply(uniformScale(normalizedScale), model);
     model = multiply(translation(-center.x, -center.y, -center.z), model);
     // Apply final placement in world space so X/Y/Z edits move the model predictably on screen.

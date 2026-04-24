@@ -1,16 +1,25 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
+#include <assimp/Importer.hpp>
+#include <assimp/material.h>
+#include <assimp/postprocess.h>
+#include <assimp/scene.h>
+#include <png.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <random>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -72,12 +81,25 @@ struct MeshVertex {
     float r;
     float g;
     float b;
+    float u;
+    float v;
 };
 
 struct UmbrellaMesh {
     std::vector<MeshVertex> vertices;
     std::vector<Vec3> canopyTriangles;
     Bounds bounds;
+};
+
+struct SceneMesh {
+    std::vector<MeshVertex> vertices;
+    Bounds bounds;
+};
+
+struct TextureImage {
+    int width = 0;
+    int height = 0;
+    std::vector<unsigned char> rgba;
 };
 
 struct UmbrellaSilhouette {
@@ -320,7 +342,8 @@ bool loadUmbrellaMesh(const std::string& path, UmbrellaMesh& mesh) {
                 mesh.vertices.push_back({
                     point.x, point.y, point.z,
                     normal.x, normal.y, normal.z,
-                    color.x, color.y, color.z
+                    color.x, color.y, color.z,
+                    0.0f, 0.0f
                 });
 
                 if (isCanopyMaterial(currentMaterial)) {
@@ -331,6 +354,106 @@ bool loadUmbrellaMesh(const std::string& path, UmbrellaMesh& mesh) {
     }
 
     return !mesh.vertices.empty();
+}
+
+bool decodePngFromMemory(const unsigned char* data, std::size_t size, TextureImage& texture) {
+    png_image image{};
+    image.version = PNG_IMAGE_VERSION;
+
+    if (!png_image_begin_read_from_memory(&image, data, size)) {
+        return false;
+    }
+
+    image.format = PNG_FORMAT_RGBA;
+    texture.width = static_cast<int>(image.width);
+    texture.height = static_cast<int>(image.height);
+    texture.rgba.resize(PNG_IMAGE_SIZE(image));
+
+    if (!png_image_finish_read(&image, nullptr, texture.rgba.data(), 0, nullptr)) {
+        png_image_free(&image);
+        texture = TextureImage{};
+        return false;
+    }
+
+    png_image_free(&image);
+    return true;
+}
+
+GLuint createTexture2D(const TextureImage& image) {
+    if (image.width <= 0 || image.height <= 0 || image.rgba.empty()) {
+        return 0;
+    }
+
+    GLuint textureId = 0;
+    glGenTextures(1, &textureId);
+    glBindTexture(GL_TEXTURE_2D, textureId);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        GL_RGBA8,
+        image.width,
+        image.height,
+        0,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        image.rgba.data()
+    );
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return textureId;
+}
+
+aiVector3D transformPointByMatrix(const aiMatrix4x4& matrix, const aiVector3D& point) {
+    return {
+        matrix.a1 * point.x + matrix.a2 * point.y + matrix.a3 * point.z + matrix.a4,
+        matrix.b1 * point.x + matrix.b2 * point.y + matrix.b3 * point.z + matrix.b4,
+        matrix.c1 * point.x + matrix.c2 * point.y + matrix.c3 * point.z + matrix.c4
+    };
+}
+
+aiVector3D transformDirectionByMatrix(const aiMatrix4x4& matrix, const aiVector3D& direction) {
+    return {
+        matrix.a1 * direction.x + matrix.a2 * direction.y + matrix.a3 * direction.z,
+        matrix.b1 * direction.x + matrix.b2 * direction.y + matrix.b3 * direction.z,
+        matrix.c1 * direction.x + matrix.c2 * direction.y + matrix.c3 * direction.z
+    };
+}
+
+void collectNodeTransforms(
+    const aiNode* node,
+    const aiMatrix4x4& parentTransform,
+    std::unordered_map<std::string, aiMatrix4x4>& nodeTransforms,
+    std::vector<aiMatrix4x4>& meshTransforms
+) {
+    if (!node) {
+        return;
+    }
+
+    const aiMatrix4x4 globalTransform = parentTransform * node->mTransformation;
+    nodeTransforms[node->mName.C_Str()] = globalTransform;
+
+    for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
+        const unsigned int meshIndex = node->mMeshes[i];
+        if (meshIndex < meshTransforms.size()) {
+            meshTransforms[meshIndex] = globalTransform;
+        }
+    }
+
+    for (unsigned int i = 0; i < node->mNumChildren; ++i) {
+        collectNodeTransforms(node->mChildren[i], globalTransform, nodeTransforms, meshTransforms);
+    }
+}
+
+GLuint createSolidWhiteTexture() {
+    TextureImage white{};
+    white.width = 1;
+    white.height = 1;
+    white.rgba = {255, 255, 255, 255};
+    return createTexture2D(white);
 }
 
 Mat4 buildUmbrellaModelMatrix(const Bounds& bounds) {
@@ -354,6 +477,236 @@ Mat4 buildUmbrellaModelMatrix(const Bounds& bounds) {
     model = multiply(uniformScale(scale * (37.5f / maxExtent)), model);
     model = multiply(translation(-center.x, -center.y, -center.z), model);
     return model;
+}
+
+Mat4 buildCharacterModelMatrix(const Bounds& bounds) {
+    const Vec3 center{
+        (bounds.min.x + bounds.max.x) * 0.5f,
+        (bounds.min.y + bounds.max.y) * 0.5f,
+        (bounds.min.z + bounds.max.z) * 0.5f
+    };
+
+    const float extentX = bounds.max.x - bounds.min.x;
+    const float extentY = bounds.max.y - bounds.min.y;
+    const float extentZ = bounds.max.z - bounds.min.z;
+    const float maxExtent = std::max({extentX, extentY, extentZ});
+    const float normalizedScale = maxExtent > 0.0001f ? (0.62f / maxExtent) : 1.0f;
+
+    Mat4 model = identityMatrix();
+    model = multiply(rotationY(-1.57f), model);
+    model = multiply(uniformScale(normalizedScale), model);
+    model = multiply(translation(-center.x, -center.y, -center.z), model);
+    // Apply final placement in world space so X/Y/Z edits move the model predictably on screen.
+    model = multiply(translation(0.12f, -0.18f, -0.04f), model);
+    return model;
+}
+
+bool loadGlbMesh(const std::string& path, SceneMesh& mesh, TextureImage& embeddedTexture) {
+    Assimp::Importer importer;
+    const aiScene* scene = importer.ReadFile(
+        path,
+        aiProcess_Triangulate |
+            aiProcess_GenNormals |
+            aiProcess_ImproveCacheLocality
+    );
+
+    if (!scene || !scene->HasMeshes()) {
+        return false;
+    }
+
+    mesh.vertices.clear();
+    mesh.bounds = Bounds{};
+    embeddedTexture = TextureImage{};
+
+    std::unordered_map<std::string, aiMatrix4x4> nodeTransforms;
+    std::vector<aiMatrix4x4> meshTransforms(scene->mNumMeshes, aiMatrix4x4());
+    collectNodeTransforms(scene->mRootNode, aiMatrix4x4(), nodeTransforms, meshTransforms);
+
+    if (scene->HasMaterials()) {
+        for (unsigned int materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex) {
+            const aiMaterial* material = scene->mMaterials[materialIndex];
+            aiString textureRef;
+            aiReturn hasTexture = material->GetTexture(aiTextureType_BASE_COLOR, 0, &textureRef);
+            if (hasTexture != AI_SUCCESS) {
+                hasTexture = material->GetTexture(aiTextureType_DIFFUSE, 0, &textureRef);
+            }
+
+            if (hasTexture != AI_SUCCESS) {
+                continue;
+            }
+
+            const std::string textureName = textureRef.C_Str();
+            if (!textureName.empty() && textureName[0] == '*') {
+                const long index = std::strtol(textureName.c_str() + 1, nullptr, 10);
+                if (index < 0 || static_cast<unsigned int>(index) >= scene->mNumTextures) {
+                    continue;
+                }
+
+                const aiTexture* texture = scene->mTextures[static_cast<unsigned int>(index)];
+                if (!texture) {
+                    continue;
+                }
+
+                if (texture->mHeight == 0) {
+                    const auto* bytes = reinterpret_cast<const unsigned char*>(texture->pcData);
+                    if (decodePngFromMemory(bytes, texture->mWidth, embeddedTexture)) {
+                        break;
+                    }
+                } else {
+                    embeddedTexture.width = static_cast<int>(texture->mWidth);
+                    embeddedTexture.height = static_cast<int>(texture->mHeight);
+                    embeddedTexture.rgba.resize(static_cast<std::size_t>(texture->mWidth) * static_cast<std::size_t>(texture->mHeight) * 4);
+                    for (unsigned int pixel = 0; pixel < texture->mWidth * texture->mHeight; ++pixel) {
+                        const aiTexel& texel = texture->pcData[pixel];
+                        const std::size_t base = static_cast<std::size_t>(pixel) * 4;
+                        embeddedTexture.rgba[base + 0] = texel.r;
+                        embeddedTexture.rgba[base + 1] = texel.g;
+                        embeddedTexture.rgba[base + 2] = texel.b;
+                        embeddedTexture.rgba[base + 3] = texel.a;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    for (unsigned int meshIndex = 0; meshIndex < scene->mNumMeshes; ++meshIndex) {
+        const aiMesh* aiMeshData = scene->mMeshes[meshIndex];
+        if (!aiMeshData || !aiMeshData->HasPositions()) {
+            continue;
+        }
+
+        const aiMatrix4x4 meshTransform = meshTransforms[meshIndex];
+
+        Vec3 materialColor{1.0f, 1.0f, 1.0f};
+        if (scene->HasMaterials() && aiMeshData->mMaterialIndex < scene->mNumMaterials) {
+            const aiMaterial* material = scene->mMaterials[aiMeshData->mMaterialIndex];
+            aiColor4D color{};
+            if (AI_SUCCESS == aiGetMaterialColor(material, AI_MATKEY_BASE_COLOR, &color) ||
+                AI_SUCCESS == aiGetMaterialColor(material, AI_MATKEY_COLOR_DIFFUSE, &color)) {
+                materialColor = {color.r, color.g, color.b};
+            }
+        }
+
+        std::vector<aiVector3D> deformedPositions(aiMeshData->mNumVertices);
+        std::vector<aiVector3D> deformedNormals(aiMeshData->mNumVertices);
+
+        if (aiMeshData->HasBones()) {
+            std::vector<aiVector3D> skinnedPositions(aiMeshData->mNumVertices, aiVector3D(0.0f, 0.0f, 0.0f));
+            std::vector<aiVector3D> skinnedNormals(aiMeshData->mNumVertices, aiVector3D(0.0f, 0.0f, 0.0f));
+            std::vector<float> totalWeights(aiMeshData->mNumVertices, 0.0f);
+
+            for (unsigned int boneIndex = 0; boneIndex < aiMeshData->mNumBones; ++boneIndex) {
+                const aiBone* bone = aiMeshData->mBones[boneIndex];
+                if (!bone) {
+                    continue;
+                }
+
+                const auto foundBone = nodeTransforms.find(bone->mName.C_Str());
+                if (foundBone == nodeTransforms.end()) {
+                    continue;
+                }
+
+                const aiMatrix4x4 skinTransform = foundBone->second * bone->mOffsetMatrix;
+
+                for (unsigned int weightIndex = 0; weightIndex < bone->mNumWeights; ++weightIndex) {
+                    const aiVertexWeight& weight = bone->mWeights[weightIndex];
+                    if (weight.mVertexId >= aiMeshData->mNumVertices || weight.mWeight <= 0.0f) {
+                        continue;
+                    }
+
+                    const unsigned int vertexIndex = weight.mVertexId;
+                    const aiVector3D basePosition = aiMeshData->mVertices[vertexIndex];
+                    const aiVector3D baseNormal = aiMeshData->HasNormals()
+                        ? aiMeshData->mNormals[vertexIndex]
+                        : aiVector3D(0.0f, 0.0f, 1.0f);
+
+                    skinnedPositions[vertexIndex] += transformPointByMatrix(skinTransform, basePosition) * weight.mWeight;
+                    skinnedNormals[vertexIndex] += transformDirectionByMatrix(skinTransform, baseNormal) * weight.mWeight;
+                    totalWeights[vertexIndex] += weight.mWeight;
+                }
+            }
+
+            for (unsigned int vertexIndex = 0; vertexIndex < aiMeshData->mNumVertices; ++vertexIndex) {
+                const aiVector3D basePosition = aiMeshData->mVertices[vertexIndex];
+                const aiVector3D baseNormal = aiMeshData->HasNormals()
+                    ? aiMeshData->mNormals[vertexIndex]
+                    : aiVector3D(0.0f, 0.0f, 1.0f);
+                const float weight = totalWeights[vertexIndex];
+
+                if (weight > 0.0f) {
+                    const float residual = std::max(0.0f, 1.0f - weight);
+                    deformedPositions[vertexIndex] = skinnedPositions[vertexIndex] + transformPointByMatrix(meshTransform, basePosition) * residual;
+                    deformedNormals[vertexIndex] = skinnedNormals[vertexIndex] + transformDirectionByMatrix(meshTransform, baseNormal) * residual;
+                } else {
+                    deformedPositions[vertexIndex] = transformPointByMatrix(meshTransform, basePosition);
+                    deformedNormals[vertexIndex] = transformDirectionByMatrix(meshTransform, baseNormal);
+                }
+
+                if (deformedNormals[vertexIndex].SquareLength() > 0.0f) {
+                    deformedNormals[vertexIndex].Normalize();
+                } else {
+                    deformedNormals[vertexIndex] = aiVector3D(0.0f, 0.0f, 1.0f);
+                }
+            }
+        } else {
+            for (unsigned int vertexIndex = 0; vertexIndex < aiMeshData->mNumVertices; ++vertexIndex) {
+                const aiVector3D basePosition = aiMeshData->mVertices[vertexIndex];
+                const aiVector3D baseNormal = aiMeshData->HasNormals()
+                    ? aiMeshData->mNormals[vertexIndex]
+                    : aiVector3D(0.0f, 0.0f, 1.0f);
+                deformedPositions[vertexIndex] = transformPointByMatrix(meshTransform, basePosition);
+                deformedNormals[vertexIndex] = transformDirectionByMatrix(meshTransform, baseNormal);
+                if (deformedNormals[vertexIndex].SquareLength() > 0.0f) {
+                    deformedNormals[vertexIndex].Normalize();
+                } else {
+                    deformedNormals[vertexIndex] = aiVector3D(0.0f, 0.0f, 1.0f);
+                }
+            }
+        }
+
+        for (unsigned int faceIndex = 0; faceIndex < aiMeshData->mNumFaces; ++faceIndex) {
+            const aiFace& face = aiMeshData->mFaces[faceIndex];
+            if (face.mNumIndices != 3) {
+                continue;
+            }
+
+            for (unsigned int localIndex = 0; localIndex < 3; ++localIndex) {
+                const unsigned int index = face.mIndices[localIndex];
+                if (index >= aiMeshData->mNumVertices) {
+                    continue;
+                }
+
+                const aiVector3D& position = deformedPositions[index];
+                const aiVector3D& aiNormal = deformedNormals[index];
+                const Vec3 normal{aiNormal.x, aiNormal.y, aiNormal.z};
+
+                Vec3 color = materialColor;
+                if (aiMeshData->HasVertexColors(0)) {
+                    const aiColor4D& vertexColor = aiMeshData->mColors[0][index];
+                    color = {vertexColor.r, vertexColor.g, vertexColor.b};
+                }
+
+                float u = 0.0f;
+                float v = 0.0f;
+                if (aiMeshData->HasTextureCoords(0)) {
+                    const aiVector3D& texCoord = aiMeshData->mTextureCoords[0][index];
+                    u = texCoord.x;
+                    v = 1.0f - texCoord.y;
+                }
+
+                mesh.vertices.push_back({
+                    position.x, position.y, position.z,
+                    normal.x, normal.y, normal.z,
+                    color.x, color.y, color.z,
+                    u, v
+                });
+                expandBounds(mesh.bounds, {position.x, position.y, position.z});
+            }
+        }
+    }
+
+    return !mesh.vertices.empty();
 }
 
 UmbrellaSilhouette buildSilhouette(const std::vector<Vec3>& canopyTriangles, const Mat4& modelMatrix) {
@@ -626,17 +979,25 @@ int main() {
         layout (location = 0) in vec3 aPosition;
         layout (location = 1) in vec3 aNormal;
         layout (location = 2) in vec3 aColor;
+        layout (location = 3) in vec2 aTexCoord;
 
         uniform mat4 uModel;
+        uniform bool uFlattenToScreen;
 
         out vec3 vNormal;
         out vec3 vColor;
+        out vec2 vTexCoord;
 
         void main() {
             vec4 worldPosition = uModel * vec4(aPosition, 1.0);
-            gl_Position = vec4(worldPosition.xy, 0.0, 1.0);
+            if (uFlattenToScreen) {
+                gl_Position = vec4(worldPosition.xy, 0.0, 1.0);
+            } else {
+                gl_Position = vec4(worldPosition.xyz, 1.0);
+            }
             vNormal = normalize(mat3(uModel) * aNormal);
             vColor = aColor;
+            vTexCoord = aTexCoord;
         }
     )GLSL";
 
@@ -644,6 +1005,10 @@ int main() {
         #version 330 core
         in vec3 vNormal;
         in vec3 vColor;
+        in vec2 vTexCoord;
+
+        uniform sampler2D uTexture;
+        uniform bool uUseTexture;
         out vec4 FragColor;
 
         void main() {
@@ -654,8 +1019,12 @@ int main() {
             float diffuse = abs(dot(normal, lightDir));
             float ambient = 0.82;
             float lighting = ambient + 0.18 * diffuse;
+            vec3 baseColor = vColor;
+            if (uUseTexture) {
+                baseColor *= texture(uTexture, vTexCoord).rgb;
+            }
 
-            FragColor = vec4(min(vColor * lighting, vec3(1.0)), 1.0);
+            FragColor = vec4(min(baseColor * lighting, vec3(1.0)), 1.0);
         }
     )GLSL";
 
@@ -700,8 +1069,10 @@ int main() {
     }
 
     std::vector<std::string> umbrellaPaths = {
-        "/Users/christinakim/Desktop/lovely-runner-snow-scene/assets/umbrella/12981_umbrella_v1_l2.obj",
-        "/Users/christinakim/Downloads/umbrella/12981_umbrella_v1_l2.obj"
+        "assets/umbrella/12981_umbrella_v1_l2.obj",
+        "./assets/umbrella/12981_umbrella_v1_l2.obj",
+        "../assets/umbrella/12981_umbrella_v1_l2.obj",
+        "../../assets/umbrella/12981_umbrella_v1_l2.obj"
     };
 
     UmbrellaMesh umbrellaMesh;
@@ -714,7 +1085,12 @@ int main() {
     }
 
     if (!meshLoaded) {
-        std::cerr << "Failed to load umbrella OBJ\n";
+        std::cerr << "Failed to load umbrella OBJ. Checked paths:\n";
+        for (const std::string& path : umbrellaPaths) {
+            std::error_code ec;
+            const bool exists = std::filesystem::exists(path, ec);
+            std::cerr << "  - " << path << (exists ? " (exists)" : " (missing)") << "\n";
+        }
         glDeleteProgram(flatProgram);
         glDeleteProgram(meshProgram);
         glDeleteProgram(particleProgram);
@@ -725,6 +1101,42 @@ int main() {
 
     const Mat4 umbrellaModel = buildUmbrellaModelMatrix(umbrellaMesh.bounds);
     const UmbrellaSilhouette silhouette = buildSilhouette(umbrellaMesh.canopyTriangles, umbrellaModel);
+
+    std::vector<std::string> characterPaths = {
+        "assets/im_sol_arm_out.glb",
+        "./assets/im_sol_arm_out.glb",
+        "../assets/im_sol_arm_out.glb",
+        "../../assets/im_sol_arm_out.glb"
+    };
+
+    SceneMesh characterMesh;
+    TextureImage characterTextureImage;
+    bool characterLoaded = false;
+    for (const std::string& path : characterPaths) {
+        if (loadGlbMesh(path, characterMesh, characterTextureImage)) {
+            characterLoaded = true;
+            break;
+        }
+    }
+
+    if (!characterLoaded) {
+        std::cerr << "Failed to load im_sol_arm_out.glb. Checked paths:\n";
+        for (const std::string& path : characterPaths) {
+            std::error_code ec;
+            const bool exists = std::filesystem::exists(path, ec);
+            std::cerr << "  - " << path << (exists ? " (exists)" : " (missing)") << "\n";
+        }
+        glDeleteProgram(flatProgram);
+        glDeleteProgram(meshProgram);
+        glDeleteProgram(particleProgram);
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
+
+    const Mat4 characterModel = buildCharacterModelMatrix(characterMesh.bounds);
+    GLuint characterTexture = createTexture2D(characterTextureImage);
+    GLuint whiteFallbackTexture = createSolidWhiteTexture();
 
     GLuint backgroundVao = 0;
     GLuint backgroundVbo = 0;
@@ -759,6 +1171,30 @@ int main() {
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, r)));
     glEnableVertexAttribArray(2);
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, u)));
+    glEnableVertexAttribArray(3);
+
+    GLuint characterVao = 0;
+    GLuint characterVbo = 0;
+    glGenVertexArrays(1, &characterVao);
+    glGenBuffers(1, &characterVbo);
+
+    glBindVertexArray(characterVao);
+    glBindBuffer(GL_ARRAY_BUFFER, characterVbo);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(characterMesh.vertices.size() * sizeof(MeshVertex)),
+        characterMesh.vertices.data(),
+        GL_STATIC_DRAW
+    );
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, x)));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, nx)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, r)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, u)));
+    glEnableVertexAttribArray(3);
 
     GLuint snowCapVao = 0;
     GLuint snowCapVbo = 0;
@@ -871,11 +1307,26 @@ int main() {
         glBindVertexArray(backgroundVao);
         glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(background.size()));
 
+        glEnable(GL_DEPTH_TEST);
         glUseProgram(meshProgram);
+        glUniform1i(glGetUniformLocation(meshProgram, "uFlattenToScreen"), 1);
+        glUniform1i(glGetUniformLocation(meshProgram, "uUseTexture"), 0);
         glUniformMatrix4fv(glGetUniformLocation(meshProgram, "uModel"), 1, GL_FALSE, umbrellaModel.m.data());
         glBindVertexArray(umbrellaVao);
         glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(umbrellaMesh.vertices.size()));
 
+        glUseProgram(meshProgram);
+        glUniform1i(glGetUniformLocation(meshProgram, "uFlattenToScreen"), 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, characterTexture != 0 ? characterTexture : whiteFallbackTexture);
+        glUniform1i(glGetUniformLocation(meshProgram, "uTexture"), 0);
+        glUniform1i(glGetUniformLocation(meshProgram, "uUseTexture"), characterTexture != 0 ? 1 : 0);
+        glUniformMatrix4fv(glGetUniformLocation(meshProgram, "uModel"), 1, GL_FALSE, characterModel.m.data());
+        glBindVertexArray(characterVao);
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(characterMesh.vertices.size()));
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        glDisable(GL_DEPTH_TEST);
         glUseProgram(flatProgram);
         glBindVertexArray(snowCapVao);
         glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(snowCap.size()));
@@ -892,6 +1343,10 @@ int main() {
     glDeleteVertexArrays(1, &particleVao);
     glDeleteBuffers(1, &snowCapVbo);
     glDeleteVertexArrays(1, &snowCapVao);
+    glDeleteTextures(1, &characterTexture);
+    glDeleteTextures(1, &whiteFallbackTexture);
+    glDeleteBuffers(1, &characterVbo);
+    glDeleteVertexArrays(1, &characterVao);
     glDeleteBuffers(1, &umbrellaVbo);
     glDeleteVertexArrays(1, &umbrellaVao);
     glDeleteBuffers(1, &backgroundVbo);

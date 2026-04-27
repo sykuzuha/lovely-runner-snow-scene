@@ -12,3 +12,9 @@ Similar projects:
 This project has a similar 3-D object in the snow as what we are going for, but it is a Christmas tree: https://www.shadertoy.com/view/ltfGzn
 
 This project currently only works on MacOS with arm64
+
+To run:
+
+Make sure to run brew install glfw glm if you don't have either installed
+
+make

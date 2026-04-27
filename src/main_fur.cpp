@@ -384,18 +384,8 @@ bool shouldGrowFur(const glm::vec3& color) {
     float minC = std::min(color.r, std::min(color.g, color.b));
     float luminance = glm::dot(color, glm::vec3(0.2126f, 0.7152f, 0.0722f));
 
-    // Orange/amber patches: r dominates strongly over both g and b
-    bool isOrange = (color.r - color.b) > 0.35f && (color.r - color.g) > 0.15f;
-
-    // Scarf tan: warm but green channel is high (tan ≈ yellowish, not red-dominant)
-    bool scarfTone = (color.r - color.b) > 0.20f
-                  && color.g > 0.52f          // scarf has significant green, orange doesn't
-                  && luminance > 0.30f
-                  && luminance < 0.80f
-                  && !isOrange;
-
     bool darkFeatureLike = luminance < 0.22f;
-    return !(darkFeatureLike || scarfTone);
+    return !(darkFeatureLike);
 }
 
 std::vector<float> generateFur(
@@ -430,7 +420,7 @@ std::vector<float> generateFur(
         glm::vec3 faceCtr = (a + b + c) / 3.0f;
         glm::vec3 outward = faceCtr - centroid;
 
-        if (glm::dot(normal, outward) < 0.05f) continue;
+        if (glm::dot(normal, outward) < -0.1f) continue;
 
         glm::vec3 tang = makeTangent(normal);
         glm::vec3 bitang = glm::normalize(glm::cross(normal, tang));
@@ -458,18 +448,18 @@ std::vector<float> generateFur(
             regionalLengthMult = glm::mix(regionalLengthMult, 1.10f, wNeck); // neck gets longer fur
             regionalGravity = glm::mix(0.008f, 0.06f, wNeck); // neck fur droops slightly
             grownDir = glm::normalize(normal * 0.96f + toFace * 0.04f);
-            strandsThisFace = (luminance > 0.72f) ? 8 : 5;
-            strandsThisFace = static_cast<int>(strandsThisFace * glm::mix(1.0f, 1.4f, wNeck));
+            strandsThisFace = (luminance > 0.72f) ? 15 : 10; 
+            strandsThisFace = static_cast<int>(strandsThisFace * glm::mix(1.0f, 2.0f, wNeck));
         }
         else {
-            if (faceCtr.y < centroid.y - 0.72f) continue;
+            if (faceCtr.y < centroid.y - 1.0f) continue;
             if (faceCtr.y > centroid.y + 0.55f) continue;
 
             float wBack = softStep(dy, 0.15f, 0.40f);
             float wBelly = softStep(-dy, 0.08f, 0.28f);
             float wSide = softStep(std::abs(toFace.x), 0.3f, 0.7f) * (1.0f - wBack * 0.6f);
-            float wFront = softStep(toFace.z, 0.2f, 0.6f) * (1.0f - wBack * 0.5f);
-            float wFace = softStep(dy, 0.08f, 0.32f) * softStep(toFace.z, 0.18f, 0.55f);
+            float wFront = softStep(toFace.z, 0.0f, 0.6f); 
+float wFace = softStep(dy, 0.2f, 0.4f) * softStep(toFace.z, 0.4f, 0.8f); 
             float wHead = softStep(dy, 0.02f, 0.26f);
 
             bool isLeg = (faceCtr.y < centroid.y - 0.05f) && (std::abs(normal.y) < 0.6f);
@@ -521,7 +511,7 @@ std::vector<float> generateFur(
             strandsThisFace = std::max(
                 0, static_cast<int>(std::lround(static_cast<float>(strandsThisFace) * glm::mix(1.0f, 0.08f, wFace))));
 
-            if (wHead > 0.75f || wFace > 0.60f) continue;
+            if (wFace > 0.85f) continue;
         }
 
         for (int si = 0; si < strandsThisFace; ++si) {
@@ -540,11 +530,6 @@ std::vector<float> generateFur(
             }
             glm::vec3 furColor = sampleMaterialColor(material, image, uv);
             if (!shouldGrowFur(furColor)) continue;
-
-            bool isTasselFace = (faceCtr.y < centroid.y + 0.10f) && 
-                    (faceCtr.y > centroid.y - 0.10f) && 
-                    (normal.y < -0.3f);
-            if (isTasselFace) continue;
 
             float length = BASE_LENGTH * regionalLengthMult *
                            (1.0f + rndSym(rng) * LENGTH_VARIANCE);

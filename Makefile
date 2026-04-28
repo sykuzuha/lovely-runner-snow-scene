@@ -3,6 +3,7 @@ CC  = /usr/bin/clang
 ARCH = -arch arm64
 CXXFLAGS = $(ARCH) -std=c++17 -Wall -Iinclude -I/opt/homebrew/include
 CFLAGS   = $(ARCH) -Wall -Iinclude -I/opt/homebrew/include
+C_SRC    = src/glad.c
 
 $(GLAD_OBJ): $(GLAD_SRC)
 	$(CC) $(CFLAGS) -c $(GLAD_SRC) -o $(GLAD_OBJ)

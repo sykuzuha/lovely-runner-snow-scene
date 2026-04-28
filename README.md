@@ -15,6 +15,13 @@ This project currently only works on MacOS with arm64
 
 To run:
 
-Make sure to run brew install glfw glm if you don't have either installed
+Make sure to install the `glfw glm assimp libpng` libraries if you don't already have those dependencies installed (can be done easy with homebrew!)
 
-make
+To run:
+
+$ make
+$ ./cat_scene
+
+OR
+
+$ make run

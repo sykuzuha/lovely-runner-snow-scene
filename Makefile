@@ -4,10 +4,8 @@ ARCH = -arch arm64
 CXXFLAGS = $(ARCH) -std=c++17 -Wall -Iinclude -I/opt/homebrew/include
 CFLAGS   = $(ARCH) -Wall -Iinclude -I/opt/homebrew/include
 
-CPP_SRC = src/main.cpp src/shader.cpp
-CPP_OBJ = main.o shader.o
-C_SRC   = src/glad.c
-OUT = cat_scene
+$(GLAD_OBJ): $(GLAD_SRC)
+	$(CC) $(CFLAGS) -c $(GLAD_SRC) -o $(GLAD_OBJ)
 
 # cat_scene still needs assimp + libpng
 LIBS = $(ARCH) -L/opt/homebrew/lib -lglfw -lassimp -lpng \

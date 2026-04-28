@@ -9,6 +9,8 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include "audio_player.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -735,6 +737,15 @@ glm::mat4 buildCameraView(CameraMode mode){
     }
 }
 
+// ─── Path search helper ───────────────────────────────────────────────────────
+std::string findFirstExistingPath(const std::vector<std::string>& candidates) {
+    for (const std::string& path : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(path, ec)) return path;
+    }
+    return "";
+}
+
 // ─── Shaders ──────────────────────────────────────────────────────────────────
 // Flat (background, ground, snow cap)
 const char* VS_FLAT = R"(#version 330 core
@@ -1065,6 +1076,33 @@ int main(int argc, char** argv) {
     GLuint bokehProg  = makeProgram(VS_BOKEH,   FS_BOKEH);
     GLuint particleProg = makeProgram(VS_PARTICLE, FS_PARTICLE);
 
+    // ── Music ─────────────────────────────────────────────────────────────────
+    std::vector<std::string> musicPaths;
+    if (argc > 3 && argv[3] != nullptr) musicPaths.push_back(argv[3]);
+    musicPaths.push_back("assets/music.mp3");
+    musicPaths.push_back("./assets/music.mp3");
+    musicPaths.push_back("../assets/music.mp3");
+    musicPaths.push_back("../../assets/music.mp3");
+
+    AudioPlayer* audioPlayer = nullptr;
+    const std::string musicPath = findFirstExistingPath(musicPaths);
+    if (!musicPath.empty()) {
+        std::string audioError;
+        audioPlayer = createAudioPlayer(musicPath, audioError);
+        if (!audioPlayer) {
+            std::cerr << "Failed to initialize audio from " << musicPath << ": " << audioError << "\n";
+        } else if (!startAudioPlayer(audioPlayer, audioError)) {
+            std::cerr << "Failed to start audio from " << musicPath << ": " << audioError << "\n";
+            destroyAudioPlayer(audioPlayer);
+            audioPlayer = nullptr;
+        } else {
+            std::cout << "Playing background audio: " << musicPath << "\n";
+        }
+    } else {
+        std::cerr << "No background audio found. Checked paths:\n";
+        for (const std::string& p : musicPaths) std::cerr << "  - " << p << "\n";
+    }
+
     // ── Background quad VAO ───────────────────────────────────────────────────
     auto background=buildBackground(), groundBand=buildGroundBand();
     auto setupFlatVAO=[](const std::vector<FlatVertex>& v) -> std::pair<GLuint,GLuint> {
@@ -1359,6 +1397,7 @@ int main(int argc, char** argv) {
     glDeleteProgram(flatProg); glDeleteProgram(meshProg);
     glDeleteProgram(bodyProg); glDeleteProgram(furProg);
     glDeleteProgram(bokehProg); glDeleteProgram(particleProg);
+    destroyAudioPlayer(audioPlayer);
     glfwTerminate();
     return 0;
 }

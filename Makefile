@@ -1,47 +1,40 @@
 CXX = /usr/bin/clang++
-CC = /usr/bin/clang
+CC  = /usr/bin/clang
 ARCH = -arch arm64
-
-INCLUDES = -Iinclude -I/opt/homebrew/include
-CXXFLAGS = $(ARCH) -std=c++17 -Wall $(INCLUDES)
-CFLAGS = $(ARCH) -Wall $(INCLUDES)
-
-GLAD_SRC = src/glad.c
-GLAD_OBJ = glad.o
-
-SCENE_SRC = src/main.cpp src/shader.cpp src/audio_player.mm
-SCENE_OUT = cat_scene
-
-FUR_SRC = src/main_fur.cpp
-FUR_OUT = cat_fur
-
-COMMON_LIBS = $(ARCH) -L/opt/homebrew/lib \
-	-framework OpenGL -framework Cocoa \
-	-framework IOKit -framework CoreVideo \
-	-framework Foundation -framework AVFoundation
-SCENE_LIBS = $(COMMON_LIBS) -lglfw -lassimp -lpng
-FUR_LIBS = $(COMMON_LIBS) -lglfw
-
-.PHONY: all run fur run_fur clean
-
-all: $(SCENE_OUT)
+CXXFLAGS = $(ARCH) -std=c++17 -Wall -Iinclude -I/opt/homebrew/include
+CFLAGS   = $(ARCH) -Wall -Iinclude -I/opt/homebrew/include
 
 $(GLAD_OBJ): $(GLAD_SRC)
 	$(CC) $(CFLAGS) -c $(GLAD_SRC) -o $(GLAD_OBJ)
 
-$(SCENE_OUT): $(GLAD_OBJ) $(SCENE_SRC)
-	$(CXX) $(CXXFLAGS) $(SCENE_SRC) $(GLAD_OBJ) -o $(SCENE_OUT) $(SCENE_LIBS)
+# cat_scene still needs assimp + libpng
+LIBS = $(ARCH) -L/opt/homebrew/lib -lglfw -lassimp -lpng \
+        -framework OpenGL -framework Cocoa \
+        -framework IOKit -framework CoreVideo
 
-run: $(SCENE_OUT)
-	./$(SCENE_OUT)
+# cat_fur (merged snow + fur) only needs glfw — tinygltf is header-only
+LIBS_FUR = $(ARCH) -L/opt/homebrew/lib -lglfw \
+        -framework OpenGL -framework Cocoa \
+        -framework IOKit -framework CoreVideo
 
-fur: $(FUR_OUT)
+all: glad.o $(CPP_OBJ)
+	$(CXX) $(ARCH) $(CPP_OBJ) glad.o -o $(OUT) $(LIBS)
 
-$(FUR_OUT): $(GLAD_OBJ) $(FUR_SRC)
-	$(CXX) $(CXXFLAGS) $(FUR_SRC) $(GLAD_OBJ) -o $(FUR_OUT) $(FUR_LIBS)
+glad.o: $(C_SRC)
+	$(CC) $(CFLAGS) -c $(C_SRC) -o glad.o
 
-run_fur: $(FUR_OUT)
-	./$(FUR_OUT) assets/im_sol_arm_out.glb
+main.o: src/main.cpp
+	$(CXX) $(CXXFLAGS) -c src/main.cpp -o main.o
+
+shader.o: src/shader.cpp
+	$(CXX) $(CXXFLAGS) -c src/shader.cpp -o shader.o
+
+fur: glad.o
+	$(CXX) $(CXXFLAGS) -c src/main_fur.cpp -o main_fur.o
+	$(CXX) $(ARCH) main_fur.o glad.o -o cat_fur $(LIBS_FUR)
+
+run: fur
+	./cat_fur assets/im_sol_arm_out.glb assets/sunjae.glb
 
 clean:
-	rm -f $(SCENE_OUT) $(FUR_OUT) $(GLAD_OBJ)
+	rm -f $(OUT) cat_fur glad.o $(CPP_OBJ) main_fur.o

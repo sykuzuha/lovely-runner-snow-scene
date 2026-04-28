@@ -2017,6 +2017,9 @@ int main() {
         }
 
         glUseProgram(meshProgram);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, whiteFallbackTexture);
+        glUniform1i(glGetUniformLocation(meshProgram, "uTexture"), 0);
         glUniform1i(glGetUniformLocation(meshProgram, "uFlattenToScreen"), 0);
         glUniform1i(glGetUniformLocation(meshProgram, "uUseTexture"), 0);
         const Mat4 displayedUmbrellaModel = multiply(cameraView, umbrellaModel);
@@ -2041,8 +2044,6 @@ int main() {
         glUniformMatrix4fv(glGetUniformLocation(meshProgram, "uModel"), 1, GL_FALSE, displayedSunjaeModel.m.data());
         glBindVertexArray(sunjaeVao);
         glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(sunjaeMesh.vertices.size()));
-        glBindTexture(GL_TEXTURE_2D, 0);
-
         glEnable(GL_DEPTH_TEST);
         glUseProgram(particleProgram);
         glUniformMatrix4fv(glGetUniformLocation(particleProgram, "uView"), 1, GL_FALSE, cameraView.m.data());

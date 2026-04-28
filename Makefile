@@ -1,43 +1,31 @@
 CXX = /usr/bin/clang++
 CC  = /usr/bin/clang
 ARCH = -arch arm64
+
 CXXFLAGS = $(ARCH) -std=c++17 -Wall -Iinclude -I/opt/homebrew/include
 CFLAGS   = $(ARCH) -Wall -Iinclude -I/opt/homebrew/include
-C_SRC    = src/glad.c
 
-$(GLAD_OBJ): $(GLAD_SRC)
-	$(CC) $(CFLAGS) -c $(GLAD_SRC) -o $(GLAD_OBJ)
-
-# cat_scene still needs assimp + libpng
-LIBS = $(ARCH) -L/opt/homebrew/lib -lglfw -lassimp -lpng \
-        -framework OpenGL -framework Cocoa \
-        -framework IOKit -framework CoreVideo
-
-# cat_fur (merged snow + fur) only needs glfw — tinygltf is header-only
 LIBS_FUR = $(ARCH) -L/opt/homebrew/lib -lglfw \
         -framework OpenGL -framework Cocoa \
         -framework IOKit -framework CoreVideo \
         -framework AVFoundation
 
-all: glad.o $(CPP_OBJ)
-	$(CXX) $(ARCH) $(CPP_OBJ) glad.o -o $(OUT) $(LIBS)
+all: fur
 
-glad.o: $(C_SRC)
-	$(CC) $(CFLAGS) -c $(C_SRC) -o glad.o
+glad.o: src/glad.c
+	$(CC) $(CFLAGS) -c src/glad.c -o glad.o
 
-main.o: src/main.cpp
-	$(CXX) $(CXXFLAGS) -c src/main.cpp -o main.o
-
-shader.o: src/shader.cpp
-	$(CXX) $(CXXFLAGS) -c src/shader.cpp -o shader.o
-
-fur: glad.o
+audio_player.o: src/audio_player.mm
 	$(CXX) $(CXXFLAGS) -c src/audio_player.mm -o audio_player.o
+
+main_fur.o: src/main_fur.cpp
 	$(CXX) $(CXXFLAGS) -c src/main_fur.cpp -o main_fur.o
+
+fur: glad.o audio_player.o main_fur.o
 	$(CXX) $(ARCH) main_fur.o glad.o audio_player.o -o cat_fur $(LIBS_FUR)
 
 run: fur
 	./cat_fur assets/im_sol_arm_out.glb assets/sunjae.glb
 
 clean:
-	rm -f $(OUT) cat_fur glad.o $(CPP_OBJ) main_fur.o audio_player.o
+	rm -f cat_fur glad.o main_fur.o audio_player.o

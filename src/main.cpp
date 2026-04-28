@@ -64,6 +64,29 @@ struct ParticleVertex {
     float size;
 };
 
+struct BokehParticle {
+    float x;
+    float y;
+    float speed;
+    float drift;
+    float phase;
+    float size;
+    float alpha;
+    float colorSeed;
+    float twinkle;
+    float flicker;
+};
+
+struct BokehVertex {
+    float x;
+    float y;
+    float size;
+    float alpha;
+    float colorSeed;
+    float twinkle;
+    float flicker;
+};
+
 struct FlatVertex {
     float x;
     float y;
@@ -133,6 +156,7 @@ enum class CameraMode {
 constexpr int kWindowWidth = 960;
 constexpr int kWindowHeight = 640;
 constexpr std::size_t kParticleCount = 900;
+constexpr std::size_t kBokehCount = 56;
 constexpr std::size_t kSnowSamples = 48;
 constexpr float kFloorTopY = -0.54f;
 constexpr float kFloorBottomY = -1.02f;
@@ -578,6 +602,30 @@ Mat4 buildCharacterModelMatrix(const Bounds& bounds) {
     return model;
 }
 
+Mat4 buildSunjaeModelMatrix(const Bounds& bounds) {
+    const Vec3 center{
+        (bounds.min.x + bounds.max.x) * 0.5f,
+        (bounds.min.y + bounds.max.y) * 0.5f,
+        (bounds.min.z + bounds.max.z) * 0.5f
+    };
+
+    const float extentX = bounds.max.x - bounds.min.x;
+    const float extentY = bounds.max.y - bounds.min.y;
+    const float extentZ = bounds.max.z - bounds.min.z;
+    const float maxExtent = std::max({extentX, extentY, extentZ});
+    const float normalizedScale = maxExtent > 0.0001f ? (0.8f / maxExtent) : 1.0f;
+    const float halfHeightScaled = extentY * 0.5f * normalizedScale;
+    const float characterY = (kFloorTopY + 0.01f) + halfHeightScaled;
+
+    Mat4 model = identityMatrix();
+    model = multiply(rotationY(1.30f), model);
+    model = multiply(scale(1.0f, 1.0f, -1.0f), model);
+    model = multiply(uniformScale(normalizedScale), model);
+    model = multiply(translation(-center.x, -center.y, -center.z), model);
+    model = multiply(translation(-0.18f, characterY - 0.18f, -0.10f), model);
+    return model;
+}
+
 Mat4 buildCameraViewTransform(CameraMode mode) {
     switch (mode) {
         case CameraMode::Front:
@@ -1010,14 +1058,41 @@ Particle makeParticle(std::mt19937& rng, bool spawnAtTop) {
     return particle;
 }
 
+BokehParticle makeBokehParticle(std::mt19937& rng, bool spawnAtTop) {
+    std::uniform_real_distribution<float> xDist(-1.10f, 1.10f);
+    std::uniform_real_distribution<float> yDist(-1.15f, 1.15f);
+    std::uniform_real_distribution<float> speedDist(0.03f, 0.12f);
+    std::uniform_real_distribution<float> driftDist(0.6f, 2.0f);
+    std::uniform_real_distribution<float> phaseDist(0.0f, 6.28318f);
+    std::uniform_real_distribution<float> sizeDist(96.0f, 260.0f);
+    std::uniform_real_distribution<float> alphaDist(0.07f, 0.18f);
+    std::uniform_real_distribution<float> colorSeedDist(0.0f, 1.0f);
+    std::uniform_real_distribution<float> twinkleDist(0.0f, 6.28318f);
+    std::uniform_real_distribution<float> flickerDist(0.0f, 0.9f);
+    std::bernoulli_distribution flickerChance(0.42);
+
+    BokehParticle particle{};
+    particle.x = xDist(rng);
+    particle.y = spawnAtTop ? 1.20f : yDist(rng);
+    particle.speed = speedDist(rng);
+    particle.drift = driftDist(rng);
+    particle.phase = phaseDist(rng);
+    particle.size = sizeDist(rng);
+    particle.alpha = alphaDist(rng);
+    particle.colorSeed = colorSeedDist(rng);
+    particle.twinkle = twinkleDist(rng);
+    particle.flicker = flickerChance(rng) ? flickerDist(rng) : 0.0f;
+    return particle;
+}
+
 std::vector<FlatVertex> buildBackground() {
     return {
-        {-1.0f, -1.0f, 0.0f, 0.72f, 0.80f, 0.93f},
-        { 1.0f, -1.0f, 0.0f, 0.72f, 0.80f, 0.93f},
-        { 1.0f,  1.0f, 0.0f, 0.56f, 0.66f, 0.82f},
-        {-1.0f, -1.0f, 0.0f, 0.72f, 0.80f, 0.93f},
-        { 1.0f,  1.0f, 0.0f, 0.56f, 0.66f, 0.82f},
-        {-1.0f,  1.0f, 0.0f, 0.56f, 0.66f, 0.82f},
+        {-1.0f, -1.0f, 0.0f, 0.08f, 0.11f, 0.22f},
+        { 1.0f, -1.0f, 0.0f, 0.08f, 0.11f, 0.22f},
+        { 1.0f,  1.0f, 0.0f, 0.03f, 0.05f, 0.14f},
+        {-1.0f, -1.0f, 0.0f, 0.08f, 0.11f, 0.22f},
+        { 1.0f,  1.0f, 0.0f, 0.03f, 0.05f, 0.14f},
+        {-1.0f,  1.0f, 0.0f, 0.03f, 0.05f, 0.14f},
     };
 }
 
@@ -1340,13 +1415,86 @@ int main() {
         }
     )GLSL";
 
+    const char* bokehVertexShader = R"GLSL(
+        #version 330 core
+        layout (location = 0) in vec2 aPosition;
+        layout (location = 1) in float aSize;
+        layout (location = 2) in float aAlpha;
+        layout (location = 3) in float aColorSeed;
+        layout (location = 4) in float aTwinkle;
+        layout (location = 5) in float aFlicker;
+
+        out float vAlpha;
+        out float vColorSeed;
+        out float vTwinkle;
+        out float vFlicker;
+
+        void main() {
+            gl_Position = vec4(aPosition, 0.0, 1.0);
+            gl_PointSize = aSize;
+            vAlpha = aAlpha;
+            vColorSeed = aColorSeed;
+            vTwinkle = aTwinkle;
+            vFlicker = aFlicker;
+        }
+    )GLSL";
+
+    const char* bokehFragmentShader = R"GLSL(
+        #version 330 core
+        in float vAlpha;
+        in float vColorSeed;
+        in float vTwinkle;
+        in float vFlicker;
+
+        uniform float uTime;
+        out vec4 FragColor;
+
+        vec3 cityLightColor(float t) {
+            vec3 c0 = vec3(1.00, 0.78, 0.52);
+            vec3 c1 = vec3(1.00, 0.93, 0.72);
+            vec3 c2 = vec3(0.72, 0.84, 1.00);
+            vec3 c3 = vec3(0.82, 0.66, 1.00);
+            vec3 c4 = vec3(0.62, 1.00, 0.82);
+
+            if (t < 0.24) {
+                return mix(c0, c1, t / 0.24);
+            }
+            if (t < 0.50) {
+                return mix(c1, c2, (t - 0.24) / 0.26);
+            }
+            if (t < 0.74) {
+                return mix(c2, c3, (t - 0.50) / 0.24);
+            }
+            return mix(c3, c4, (t - 0.74) / 0.26);
+        }
+
+        void main() {
+            vec2 p = gl_PointCoord - vec2(0.5);
+            float d = length(p);
+            if (d > 0.5) {
+                discard;
+            }
+
+            float edge = smoothstep(0.52, 0.18, d);
+            float core = smoothstep(0.26, 0.0, d);
+            float flickerRate = 0.08 + 0.16 * fract(vTwinkle * 0.159);
+            float flickerPulse = 0.76 + 0.24 * sin(uTime * flickerRate + vTwinkle);
+            float flickerMix = (1.0 - vFlicker) + vFlicker * flickerPulse;
+            vec3 color = cityLightColor(vColorSeed) * 0.88;
+
+            FragColor = vec4(color, vAlpha * flickerMix * (0.62 * edge + 0.22 * core));
+        }
+    )GLSL";
+
     GLuint flatProgram = createProgram(flatVertexShader, flatFragmentShader);
     GLuint meshProgram = createProgram(meshVertexShader, meshFragmentShader);
     GLuint particleProgram = createProgram(particleVertexShader, particleFragmentShader);
-    if (flatProgram == 0 || meshProgram == 0 || particleProgram == 0) {
+    GLuint bokehProgram = createProgram(bokehVertexShader, bokehFragmentShader);
+    if (flatProgram == 0 || meshProgram == 0 || particleProgram == 0 || bokehProgram == 0) {
         glDeleteProgram(flatProgram);
         glDeleteProgram(meshProgram);
         glDeleteProgram(particleProgram);
+        glDeleteProgram(bokehProgram);
         glfwDestroyWindow(window);
         glfwTerminate();
         return -1;
@@ -1378,6 +1526,7 @@ int main() {
         glDeleteProgram(flatProgram);
         glDeleteProgram(meshProgram);
         glDeleteProgram(particleProgram);
+        glDeleteProgram(bokehProgram);
         glfwDestroyWindow(window);
         glfwTerminate();
         return -1;
@@ -1414,13 +1563,50 @@ int main() {
         glDeleteProgram(flatProgram);
         glDeleteProgram(meshProgram);
         glDeleteProgram(particleProgram);
+        glDeleteProgram(bokehProgram);
         glfwDestroyWindow(window);
         glfwTerminate();
         return -1;
     }
 
     const Mat4 characterModel = buildCharacterModelMatrix(characterMesh.bounds);
+
+    std::vector<std::string> sunjaePaths = {
+        "assets/sunjae.glb",
+        "./assets/sunjae.glb",
+        "../assets/sunjae.glb",
+        "../../assets/sunjae.glb"
+    };
+
+    SceneMesh sunjaeMesh;
+    TextureImage sunjaeTextureImage;
+    bool sunjaeLoaded = false;
+    for (const std::string& path : sunjaePaths) {
+        if (loadGlbMesh(path, sunjaeMesh, sunjaeTextureImage)) {
+            sunjaeLoaded = true;
+            break;
+        }
+    }
+
+    if (!sunjaeLoaded) {
+        std::cerr << "Failed to load sunjae.glb. Checked paths:\n";
+        for (const std::string& path : sunjaePaths) {
+            std::error_code ec;
+            const bool exists = std::filesystem::exists(path, ec);
+            std::cerr << "  - " << path << (exists ? " (exists)" : " (missing)") << "\n";
+        }
+        glDeleteProgram(flatProgram);
+        glDeleteProgram(meshProgram);
+        glDeleteProgram(particleProgram);
+        glDeleteProgram(bokehProgram);
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
+
+    const Mat4 sunjaeModel = buildSunjaeModelMatrix(sunjaeMesh.bounds);
     GLuint characterTexture = createTexture2D(characterTextureImage);
+    GLuint sunjaeTexture = createTexture2D(sunjaeTextureImage);
     GLuint whiteFallbackTexture = createSolidWhiteTexture();
 
     GLuint backgroundVao = 0;
@@ -1477,6 +1663,28 @@ int main() {
         GL_ARRAY_BUFFER,
         static_cast<GLsizeiptr>(floorMesh.size() * sizeof(MeshVertex)),
         floorMesh.data(),
+        GL_STATIC_DRAW
+    );
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, x)));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, nx)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, r)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, u)));
+    glEnableVertexAttribArray(3);
+
+    GLuint sunjaeVao = 0;
+    GLuint sunjaeVbo = 0;
+    glGenVertexArrays(1, &sunjaeVao);
+    glGenBuffers(1, &sunjaeVbo);
+
+    glBindVertexArray(sunjaeVao);
+    glBindBuffer(GL_ARRAY_BUFFER, sunjaeVbo);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(sunjaeMesh.vertices.size() * sizeof(MeshVertex)),
+        sunjaeMesh.vertices.data(),
         GL_STATIC_DRAW
     );
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, x)));
@@ -1553,10 +1761,16 @@ int main() {
     std::vector<Particle> particles;
     particles.reserve(kParticleCount);
 
+    std::vector<BokehParticle> bokehParticles;
+    bokehParticles.reserve(kBokehCount);
+
     std::random_device rd;
     std::mt19937 rng(rd());
     for (std::size_t i = 0; i < kParticleCount; ++i) {
         particles.push_back(makeParticle(rng, false));
+    }
+    for (std::size_t i = 0; i < kBokehCount; ++i) {
+        bokehParticles.push_back(makeBokehParticle(rng, false));
     }
 
     std::vector<ParticleVertex> particleVertices(kParticleCount);
@@ -1572,6 +1786,33 @@ int main() {
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(ParticleVertex), reinterpret_cast<void*>(offsetof(ParticleVertex, size)));
     glEnableVertexAttribArray(1);
+
+    GLuint bokehVao = 0;
+    GLuint bokehVbo = 0;
+    glGenVertexArrays(1, &bokehVao);
+    glGenBuffers(1, &bokehVbo);
+
+    std::vector<BokehVertex> bokehVertices(kBokehCount);
+    glBindVertexArray(bokehVao);
+    glBindBuffer(GL_ARRAY_BUFFER, bokehVbo);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(bokehVertices.size() * sizeof(BokehVertex)),
+        nullptr,
+        GL_DYNAMIC_DRAW
+    );
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(BokehVertex), reinterpret_cast<void*>(offsetof(BokehVertex, x)));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(BokehVertex), reinterpret_cast<void*>(offsetof(BokehVertex, size)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(BokehVertex), reinterpret_cast<void*>(offsetof(BokehVertex, alpha)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(BokehVertex), reinterpret_cast<void*>(offsetof(BokehVertex, colorSeed)));
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, sizeof(BokehVertex), reinterpret_cast<void*>(offsetof(BokehVertex, twinkle)));
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, sizeof(BokehVertex), reinterpret_cast<void*>(offsetof(BokehVertex, flicker)));
+    glEnableVertexAttribArray(5);
 
     GLuint settledSnowVao = 0;
     GLuint settledSnowVbo = 0;
@@ -1665,6 +1906,20 @@ int main() {
             particleVertices[i] = {particle.x, particle.y, particle.z, particle.size};
         }
 
+        for (std::size_t i = 0; i < bokehParticles.size(); ++i) {
+            BokehParticle& particle = bokehParticles[i];
+
+            bokehVertices[i] = {
+                particle.x,
+                particle.y,
+                particle.size,
+                particle.alpha,
+                particle.colorSeed,
+                particle.twinkle,
+                particle.flicker
+            };
+        }
+
         std::size_t settledCount = 0;
         for (std::size_t zi = 0; zi < UmbrellaHeightField::kSamples; ++zi) {
             const float tz = static_cast<float>(zi) / static_cast<float>(UmbrellaHeightField::kSamples - 1);
@@ -1715,7 +1970,15 @@ int main() {
             settledSnowVertices.data()
         );
 
-        glClearColor(0.56f, 0.66f, 0.82f, 1.0f);
+        glBindBuffer(GL_ARRAY_BUFFER, bokehVbo);
+        glBufferSubData(
+            GL_ARRAY_BUFFER,
+            0,
+            static_cast<GLsizeiptr>(bokehVertices.size() * sizeof(BokehVertex)),
+            bokehVertices.data()
+        );
+
+        glClearColor(0.03f, 0.05f, 0.14f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         const Mat4 cameraView = buildCameraViewTransform(cameraMode);
@@ -1735,6 +1998,12 @@ int main() {
             glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(groundBand.size()));
         }
 
+        // Draw bokeh in the background layer so scene geometry stays in front.
+        glUseProgram(bokehProgram);
+        glUniform1f(glGetUniformLocation(bokehProgram, "uTime"), currentTime);
+        glBindVertexArray(bokehVao);
+        glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(bokehVertices.size()));
+
         glEnable(GL_DEPTH_TEST);
         if (cameraMode != CameraMode::Above) {
             glUseProgram(meshProgram);
@@ -1748,6 +2017,9 @@ int main() {
         }
 
         glUseProgram(meshProgram);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, whiteFallbackTexture);
+        glUniform1i(glGetUniformLocation(meshProgram, "uTexture"), 0);
         glUniform1i(glGetUniformLocation(meshProgram, "uFlattenToScreen"), 0);
         glUniform1i(glGetUniformLocation(meshProgram, "uUseTexture"), 0);
         const Mat4 displayedUmbrellaModel = multiply(cameraView, umbrellaModel);
@@ -1765,8 +2037,13 @@ int main() {
         glUniformMatrix4fv(glGetUniformLocation(meshProgram, "uModel"), 1, GL_FALSE, displayedCharacterModel.m.data());
         glBindVertexArray(characterVao);
         glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(characterMesh.vertices.size()));
-        glBindTexture(GL_TEXTURE_2D, 0);
 
+        glBindTexture(GL_TEXTURE_2D, sunjaeTexture != 0 ? sunjaeTexture : whiteFallbackTexture);
+        glUniform1i(glGetUniformLocation(meshProgram, "uUseTexture"), sunjaeTexture != 0 ? 1 : 0);
+        const Mat4 displayedSunjaeModel = multiply(cameraView, sunjaeModel);
+        glUniformMatrix4fv(glGetUniformLocation(meshProgram, "uModel"), 1, GL_FALSE, displayedSunjaeModel.m.data());
+        glBindVertexArray(sunjaeVao);
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(sunjaeMesh.vertices.size()));
         glEnable(GL_DEPTH_TEST);
         glUseProgram(particleProgram);
         glUniformMatrix4fv(glGetUniformLocation(particleProgram, "uView"), 1, GL_FALSE, cameraView.m.data());
@@ -1781,12 +2058,15 @@ int main() {
         glfwPollEvents();
     }
 
+    glDeleteBuffers(1, &bokehVbo);
+    glDeleteVertexArrays(1, &bokehVao);
     glDeleteBuffers(1, &particleVbo);
     glDeleteVertexArrays(1, &particleVao);
     glDeleteBuffers(1, &settledSnowVbo);
     glDeleteVertexArrays(1, &settledSnowVao);
     glDeleteBuffers(1, &snowCapVbo);
     glDeleteVertexArrays(1, &snowCapVao);
+    glDeleteTextures(1, &sunjaeTexture);
     glDeleteTextures(1, &characterTexture);
     glDeleteTextures(1, &whiteFallbackTexture);
     glDeleteBuffers(1, &topFloorFillVbo);
@@ -1795,6 +2075,8 @@ int main() {
     glDeleteVertexArrays(1, &groundBandVao);
     glDeleteBuffers(1, &floorVbo);
     glDeleteVertexArrays(1, &floorVao);
+    glDeleteBuffers(1, &sunjaeVbo);
+    glDeleteVertexArrays(1, &sunjaeVao);
     glDeleteBuffers(1, &characterVbo);
     glDeleteVertexArrays(1, &characterVao);
     glDeleteBuffers(1, &umbrellaVbo);
@@ -1804,6 +2086,7 @@ int main() {
     glDeleteProgram(flatProgram);
     glDeleteProgram(meshProgram);
     glDeleteProgram(particleProgram);
+    glDeleteProgram(bokehProgram);
 
     glfwDestroyWindow(window);
     glfwTerminate();

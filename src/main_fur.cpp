@@ -380,8 +380,6 @@ glm::vec3 sampleMaterialColor(
 }
 
 bool shouldGrowFur(const glm::vec3& color) {
-    float maxC = std::max(color.r, std::max(color.g, color.b));
-    float minC = std::min(color.r, std::min(color.g, color.b));
     float luminance = glm::dot(color, glm::vec3(0.2126f, 0.7152f, 0.0722f));
 
     bool darkFeatureLike = luminance < 0.22f;

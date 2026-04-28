@@ -7,6 +7,8 @@
 #include <assimp/scene.h>
 #include <png.h>
 
+#include "audio_player.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -169,6 +171,17 @@ std::string trim(const std::string& value) {
 
     const std::size_t end = value.find_last_not_of(" \t\r\n");
     return value.substr(start, end - start + 1);
+}
+
+std::string findFirstExistingPath(const std::vector<std::string>& candidates) {
+    for (const std::string& path : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(path, ec)) {
+            return path;
+        }
+    }
+
+    return "";
 }
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
@@ -1267,7 +1280,7 @@ GLuint createProgram(const char* vertexSource, const char* fragmentSource) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW\n";
         return -1;
@@ -1500,6 +1513,36 @@ int main() {
         return -1;
     }
 
+    std::vector<std::string> musicPaths;
+    if (argc > 1 && argv[1] != nullptr) {
+        musicPaths.push_back(argv[1]);
+    }
+    musicPaths.push_back("assets/music.mp3");
+    musicPaths.push_back("./assets/music.mp3");
+    musicPaths.push_back("../assets/music.mp3");
+    musicPaths.push_back("../../assets/music.mp3");
+
+    AudioPlayer* audioPlayer = nullptr;
+    const std::string musicPath = findFirstExistingPath(musicPaths);
+    if (!musicPath.empty()) {
+        std::string audioError;
+        audioPlayer = createAudioPlayer(musicPath, audioError);
+        if (audioPlayer == nullptr) {
+            std::cerr << "Failed to initialize audio from " << musicPath << ": " << audioError << "\n";
+        } else if (!startAudioPlayer(audioPlayer, audioError)) {
+            std::cerr << "Failed to start audio playback from " << musicPath << ": " << audioError << "\n";
+            destroyAudioPlayer(audioPlayer);
+            audioPlayer = nullptr;
+        } else {
+            std::cout << "Playing background audio: " << musicPath << "\n";
+        }
+    } else {
+        std::cerr << "No background audio found. Checked paths:\n";
+        for (const std::string& path : musicPaths) {
+            std::cerr << "  - " << path << "\n";
+        }
+    }
+
     std::vector<std::string> umbrellaPaths = {
         "assets/umbrella/12981_umbrella_v1_l2.obj",
         "./assets/umbrella/12981_umbrella_v1_l2.obj",
@@ -1527,6 +1570,7 @@ int main() {
         glDeleteProgram(meshProgram);
         glDeleteProgram(particleProgram);
         glDeleteProgram(bokehProgram);
+        destroyAudioPlayer(audioPlayer);
         glfwDestroyWindow(window);
         glfwTerminate();
         return -1;
@@ -1564,6 +1608,7 @@ int main() {
         glDeleteProgram(meshProgram);
         glDeleteProgram(particleProgram);
         glDeleteProgram(bokehProgram);
+        destroyAudioPlayer(audioPlayer);
         glfwDestroyWindow(window);
         glfwTerminate();
         return -1;
@@ -1599,6 +1644,7 @@ int main() {
         glDeleteProgram(meshProgram);
         glDeleteProgram(particleProgram);
         glDeleteProgram(bokehProgram);
+        destroyAudioPlayer(audioPlayer);
         glfwDestroyWindow(window);
         glfwTerminate();
         return -1;
@@ -2087,6 +2133,7 @@ int main() {
     glDeleteProgram(meshProgram);
     glDeleteProgram(particleProgram);
     glDeleteProgram(bokehProgram);
+    destroyAudioPlayer(audioPlayer);
 
     glfwDestroyWindow(window);
     glfwTerminate();

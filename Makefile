@@ -6,45 +6,42 @@ INCLUDES = -Iinclude -I/opt/homebrew/include
 CXXFLAGS = $(ARCH) -std=c++17 -Wall $(INCLUDES)
 CFLAGS = $(ARCH) -Wall $(INCLUDES)
 
-CPP_SRC = src/main.cpp
-C_SRC = src/glad.c
-OUT = cat_scene
+GLAD_SRC = src/glad.c
+GLAD_OBJ = glad.o
+
+SCENE_SRC = src/main.cpp src/shader.cpp src/audio_player.mm
+SCENE_OUT = cat_scene
+
+FUR_SRC = src/main_fur.cpp
 FUR_OUT = cat_fur
 
-LIBS = $(ARCH) -L/opt/homebrew/lib -lglfw -lassimp -lpng \
+COMMON_LIBS = $(ARCH) -L/opt/homebrew/lib \
 	-framework OpenGL -framework Cocoa \
-	-framework IOKit -framework CoreVideo
+	-framework IOKit -framework CoreVideo \
+	-framework Foundation -framework AVFoundation
+SCENE_LIBS = $(COMMON_LIBS) -lglfw -lassimp -lpng
+FUR_LIBS = $(COMMON_LIBS) -lglfw
 
-all: $(OUT)
+.PHONY: all run fur run_fur clean
 
-glad.o: $(C_SRC)
-	$(CC) $(CFLAGS) -c $(C_SRC) -o glad.o
+all: $(SCENE_OUT)
 
-$(OUT): glad.o $(CPP_SRC)
-CFLAGS   = $(ARCH) -Wall -Iinclude -I/opt/homebrew/include
+$(GLAD_OBJ): $(GLAD_SRC)
+	$(CC) $(CFLAGS) -c $(GLAD_SRC) -o $(GLAD_OBJ)
 
-CPP_SRC = src/main.cpp src/shader.cpp
-CPP_OBJ = main.o shader.o
-C_SRC   = src/glad.c
-OUT = cat_scene
+$(SCENE_OUT): $(GLAD_OBJ) $(SCENE_SRC)
+	$(CXX) $(CXXFLAGS) $(SCENE_SRC) $(GLAD_OBJ) -o $(SCENE_OUT) $(SCENE_LIBS)
 
-LIBS = $(ARCH) -L/opt/homebrew/lib -lglfw \
-        -framework OpenGL -framework Cocoa \
-        -framework IOKit -framework CoreVideo
+run: $(SCENE_OUT)
+	./$(SCENE_OUT)
 
-all:
-	$(CC)  $(CFLAGS)   -c $(C_SRC) -o glad.o
-	$(CXX) $(CXXFLAGS) $(CPP_SRC) glad.o -o $(OUT) $(LIBS)
+fur: $(FUR_OUT)
 
-run: $(OUT)
-	./$(OUT)
+$(FUR_OUT): $(GLAD_OBJ) $(FUR_SRC)
+	$(CXX) $(CXXFLAGS) $(FUR_SRC) $(GLAD_OBJ) -o $(FUR_OUT) $(FUR_LIBS)
 
-fur: glad.o src/main_fur.cpp
-	$(CXX) $(CXXFLAGS) src/main_fur.cpp glad.o -o $(FUR_OUT) $(LIBS)
-
-run_fur: fur
+run_fur: $(FUR_OUT)
 	./$(FUR_OUT) assets/im_sol_arm_out.glb
 
 clean:
-	rm -f $(OUT) $(FUR_OUT) glad.o
-	rm -f $(OUT) cat_fur glad.o
+	rm -f $(SCENE_OUT) $(FUR_OUT) $(GLAD_OBJ)

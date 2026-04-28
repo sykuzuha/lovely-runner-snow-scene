@@ -15,17 +15,12 @@ This project currently only works on MacOS with arm64
 
 To run:
 
-Make sure to install the `glfw glm assimp libpng` libraries if you don't already have those dependencies installed (can be done easy with homebrew!)
+Make sure to install the `glfw glm assimp libpng` libraries if you don't already have those dependencies installed (can be done easily with homebrew!)
 
 To run:
-
-$ make
-$ ./cat_scene
-
-OR
 
 $ make run
 
 Background music:
 
-The audio file at `assets/music.mp3` will auto-play and loop, but to play a different song, you can pass a file path directly: `./cat_scene /absolute/path/to/song.mp3`
+The audio file at `assets/music.mp3` will auto-play and loop.

@@ -28,5 +28,5 @@ $ make run
 
 Background music:
 
-- Put one audio file at `assets/music.mp3` to have it auto-play and loop.
+- The audio file at `assets/music.mp3` will auto-play and loop.
 - Or pass a file path directly: `./cat_scene /absolute/path/to/song.mp3`

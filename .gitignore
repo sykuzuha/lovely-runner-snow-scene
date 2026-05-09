@@ -3,3 +3,6 @@ cat_with_fur.mtl
 cat_fur
 cat_scene
 glad.o
+camera.o
+audio_player.o
+main.o

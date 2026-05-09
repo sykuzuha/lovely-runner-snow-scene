@@ -5,12 +5,17 @@ ARCH = -arch arm64
 CXXFLAGS = $(ARCH) -std=c++17 -Wall -Iinclude -I/opt/homebrew/include
 CFLAGS   = $(ARCH) -Wall -Iinclude -I/opt/homebrew/include
 
-LIBS_FUR = $(ARCH) -L/opt/homebrew/lib -lglfw \
-        -framework OpenGL -framework Cocoa \
-        -framework IOKit -framework CoreVideo \
-        -framework AVFoundation
+LIBS = $(ARCH) -L/opt/homebrew/lib -lglfw \
+	-framework OpenGL -framework Cocoa \
+	-framework IOKit -framework CoreVideo \
+	-framework AVFoundation
 
-all: fur
+TARGET = cat_scene
+OBJS = glad.o audio_player.o main.o
+
+.PHONY: all run clean
+
+all: $(TARGET)
 
 glad.o: src/glad.c
 	$(CC) $(CFLAGS) -c src/glad.c -o glad.o
@@ -18,14 +23,14 @@ glad.o: src/glad.c
 audio_player.o: src/audio_player.mm
 	$(CXX) $(CXXFLAGS) -c src/audio_player.mm -o audio_player.o
 
-main_fur.o: src/main_fur.cpp
-	$(CXX) $(CXXFLAGS) -c src/main_fur.cpp -o main_fur.o
+main.o: src/main.cpp
+	$(CXX) $(CXXFLAGS) -c src/main.cpp -o main.o
 
-fur: glad.o audio_player.o main_fur.o
-	$(CXX) $(ARCH) main_fur.o glad.o audio_player.o -o cat_fur $(LIBS_FUR)
+$(TARGET): $(OBJS)
+	$(CXX) $(ARCH) $(OBJS) -o $(TARGET) $(LIBS)
 
-run: fur
-	./cat_fur assets/im_sol_arm_out.glb assets/sunjae.glb
+run: $(TARGET)
+	./$(TARGET)
 
 clean:
-	rm -f cat_fur glad.o main_fur.o audio_player.o
+	rm -f $(TARGET) $(OBJS)
